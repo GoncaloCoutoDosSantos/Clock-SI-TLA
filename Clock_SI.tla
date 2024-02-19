@@ -134,12 +134,33 @@ Read_msg(p,msg) == LET
                         new_key_set == c_status[tx].key_set \ {key}
                    IN
                         /\ msg.type = "Read"
+                        /\ c_status[tx].key_set # {key}
                         /\ \E n \in (DOMAIN db[key]): 
                             Check_key_read(msg.timestamp,key,db[key][n]) /\ 
                             c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n)] @@ c_status[tx]]
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                         /\ Update_time(p)
                         /\ UNCHANGED <<db,key_part,part_key,result>>
+
+Finish_read(p,msg) == 
+                    LET
+                        tx == msg.id
+                        key == msg.msg
+                        new_ret(n) == c_status[tx].resp @@ [k \in {key} |-> db[key][n].val]
+                    IN
+                        /\ c_status[tx].status = "READ"
+                        /\ c_status[tx].key_set = {key}
+                        /\ msg.type = "Read"
+                        /\ \E n \in (DOMAIN db[key]): 
+                            Check_key_read(msg.timestamp,key,db[key][n]) /\ 
+                            result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "READ",ret|-> new_ret(n)]}]
+
+                        /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
+                        /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
+                        /\ Update_time(p)
+                        /\ UNCHANGED <<db,key_part,part_key>>
+
+
 
 \* Checks if there is a conflict write or if already as recive an abort message
 \* if commited the commit timestamp must be lower
@@ -224,13 +245,9 @@ Recv_msg == \E p \in PART:\E msg \in inbox[p]:
                    \/ Commit_msg(p,msg) 
                    \/ Write_abort(p,msg)
                    \/ Write_msg(p,msg)
-                   \/ Read_msg(p,msg))
+                   \/ Read_msg(p,msg)
+                   \/ Finish_read(p,msg))
 
-Finish_read(tx) == /\ c_status[tx].status = "READ"
-                   /\ c_status[tx].key_set = {}
-                   /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "READ",ret|-> c_status[tx].resp]}]
-                   /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
-                   /\ UNCHANGED <<db,inbox,key_part,part_key,time>>
 
 Finish_write(tx) == LET
                         p == c_status[tx].part
@@ -247,7 +264,7 @@ Finish_write(tx) == LET
                          /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "WRITE",ret|->"OK"]}] 
                          /\ UNCHANGED <<db,key_part,part_key,time>>
 
-Finish_op == \E tx \in TX_ID: Finish_read(tx) \/ Finish_write(tx)
+Finish_op == \E tx \in TX_ID: Finish_write(tx) 
 
 
 Next_part == (Finish_op \/ Recv_msg ) /\ UNCHANGED vars_snap
