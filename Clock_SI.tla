@@ -132,34 +132,23 @@ Read_msg(p,msg) == LET
                         key == msg.msg
                         new_resp(n) == [k \in {key}|-> db[key][n].val] @@ c_status[tx].resp
                         new_key_set == c_status[tx].key_set \ {key}
+                        new_ret(n) == c_status[tx].resp @@ [k \in {key} |-> db[key][n].val]
+
+                        finish_read(n) == 
+                            /\ c_status[tx].status = "READ"
+                            /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type |-> "READ",ret|->new_ret(n)]}]
+                            /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
+                        normal_read(n) == 
+                            /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n)] @@ c_status[tx]]
+                            /\ result' = result
                    IN
                         /\ msg.type = "Read"
-                        /\ c_status[tx].key_set # {key}
                         /\ \E n \in (DOMAIN db[key]): 
                             Check_key_read(msg.timestamp,key,db[key][n]) /\ 
-                            c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n)] @@ c_status[tx]]
+                            IF c_status[tx].key_set = {key} THEN finish_read(n) ELSE normal_read(n)
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ Update_time(p)
-                        /\ UNCHANGED <<db,key_part,part_key,result>>
-
-Finish_read(p,msg) == 
-                    LET
-                        tx == msg.id
-                        key == msg.msg
-                        new_ret(n) == c_status[tx].resp @@ [k \in {key} |-> db[key][n].val]
-                    IN
-                        /\ c_status[tx].status = "READ"
-                        /\ c_status[tx].key_set = {key}
-                        /\ msg.type = "Read"
-                        /\ \E n \in (DOMAIN db[key]): 
-                            Check_key_read(msg.timestamp,key,db[key][n]) /\ 
-                            result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "READ",ret|-> new_ret(n)]}]
-
-                        /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
                         /\ Update_time(p)
                         /\ UNCHANGED <<db,key_part,part_key>>
-
 
 
 \* Checks if there is a conflict write or if already as recive an abort message
@@ -245,8 +234,7 @@ Recv_msg == \E p \in PART:\E msg \in inbox[p]:
                    \/ Commit_msg(p,msg) 
                    \/ Write_abort(p,msg)
                    \/ Write_msg(p,msg)
-                   \/ Read_msg(p,msg)
-                   \/ Finish_read(p,msg))
+                   \/ Read_msg(p,msg))
 
 
 Finish_write(tx) == LET
