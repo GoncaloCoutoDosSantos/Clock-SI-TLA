@@ -160,20 +160,46 @@ Check_key_write(timestamp,tx,key) == \A n \in (DOMAIN db[key]):
                                       \/ (db[key][n].state = "ABORTED" /\ db[key][n].tx # tx)
                                       \/ (db[key][n].state # "PREPARED") 
 
+Finish_write(p,msg) == 
+                    LET
+                        tx == msg.id
+                        keys == (DOMAIN c_status[tx].resp) 
+                        all_keys == keys \union (DOMAIN msg.msg)
+                        times == {c_status[tx].resp[key]: key \in keys} \union {Get_time(p)}
+                        t == CHOOSE t \in times: \A t1 \in times: t >= t1
+                        parts_msg == {part \in PART: \E k \in all_keys: key_part[k] = part} \* set with ids to partitoin to message
+                        set_msg(t_max) == {Mk_msg("Commit",p,part,all_keys \intersect part_key[part],t_max,tx):part \in parts_msg}
+
+                        new_inbox(msg_set) == 
+                            [part \in (PART \ {p}) |->{m \in msg_set:m.to = part} \union inbox[part]] @@ 
+                            [part \in {p}|->(inbox[part]\union{m \in msg_set:m.to = part})\{msg}]
+                    IN
+                         /\ c_status[tx].status = "WRITE"
+                         /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-> <<>>] @@ c_status[tx]]
+                         /\ inbox' = new_inbox(set_msg(t))
+                         /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "WRITE",ret|->"OK"]}] 
+
+
 Write_msg(p,msg) == LET
                         tx == msg.id
                         keys == DOMAIN msg.msg
                         my_time == Get_time(p)
                         new_resp == [key \in keys |-> my_time] @@ c_status[tx].resp
                         new_key_set == c_status[tx].key_set \ keys
+
+                        normal_write == 
+                            /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
+                            /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp] @@ c_status[tx]]
+                            /\ result' = result
                     IN
                         /\ msg.type = "Prepare"
                         /\ \A key \in keys: Check_key_write(msg.timestamp,msg.id,key)
+                        /\ IF c_status[tx].key_set = keys THEN Finish_write(p,msg) ELSE normal_write
                         /\ db' = [key \in keys |-> Append(db[key],[val|->msg.msg[key],timestamp|->my_time,state|->"PREPARED",tx|->msg.id])] @@ db 
-                        /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp] @@ c_status[tx]]
                         /\ Update_time(p)
-                        /\ UNCHANGED <<key_part,part_key,result>>
+                        /\ UNCHANGED <<key_part,part_key>>
+
+
 
 Write_abort(p,msg) == LET
                         tx == msg.id
@@ -185,7 +211,7 @@ Write_abort(p,msg) == LET
                         part_abort == [part \in part_msg |-> (part_key[part] \intersect all_keys)]
                         set_msg == {Mk_msg("Abort",p,part,part_abort[part],msg.timestamp,msg.id):part \in part_msg}
 
-                        new_inbox(msg_set) == [part \in (PART \ {p}) |->{m \in msg_set:m.id = part} \union inbox[part]] @@ [part \in {p}|->inbox[part]\{msg}]
+                        new_inbox(msg_set) == [part \in (PART \ {p}) |->{m \in msg_set:m.to = part} \union inbox[part]] @@ [part \in {p}|->inbox[part]\{msg}]
                       IN 
                         /\ msg.type = "Prepare"
                         /\ ~(\A key \in keys: Check_key_write(msg.timestamp,msg.id,key))
@@ -236,26 +262,7 @@ Recv_msg == \E p \in PART:\E msg \in inbox[p]:
                    \/ Write_msg(p,msg)
                    \/ Read_msg(p,msg))
 
-
-Finish_write(tx) == LET
-                        p == c_status[tx].part
-                        keys == DOMAIN c_status[tx].resp
-                        times == {c_status[tx].resp[key]: key \in keys}
-                        t == CHOOSE t \in times: \A t1 \in times: t >= t1
-                        parts_msg == {part \in PART: \E k \in keys: key_part[k] = part} \* set with ids to partitoin to message
-                        set_msg(t_max) == {Mk_msg("Commit",p,part,keys \intersect part_key[part],t_max,tx):part \in parts_msg}
-                    IN
-                         /\ c_status[tx].status = "WRITE"
-                         /\ c_status[tx].key_set = {}
-                         /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-> <<>>] @@ c_status[tx]]
-                         /\ inbox' = Send_msg(set_msg(t))
-                         /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "WRITE",ret|->"OK"]}] 
-                         /\ UNCHANGED <<db,key_part,part_key,time>>
-
-Finish_op == \E tx \in TX_ID: Finish_write(tx) 
-
-
-Next_part == (Finish_op \/ Recv_msg ) /\ UNCHANGED vars_snap
+Next_part ==  Recv_msg /\ UNCHANGED vars_snap
 
 \* Snapshot model --------------------------------------------------------------
 
@@ -327,6 +334,8 @@ Next == Next_snap \/ Next_part
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
 All_finish == <> (\A tx \in TX_ID:state[tx] = "DONE")
+
+All_entry == <> [](\A key \in KEY: \A entry \in (DOMAIN db[key]): db[key][entry].state # "PREPARED")
 
 ================================
 
