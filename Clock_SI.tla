@@ -19,17 +19,13 @@ VARIABLES
           time,       \* Simulation of real time 
 \* Snapshot variables 
 
-          snapshot,  \* Function that maps a transaction to a snapshot
           read_keys, \* Function that maps a transaction to a set of keys to read 
           write_keys,\* Function that maps a transaction to a set of keys to write 
-          state,     \* Function that maps a transaction to is current state
-\* common to both models
+          state     \* Function that maps a transaction to is current state
             
-          result    \* Funtion that maps a transactio to the result of the last operation
-
-vars      == <<db,inbox,key_part,part_key,c_status,time,snapshot,read_keys,write_keys,state,result>>
+vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state>>
 vars_part == <<db,key_part,part_key>>
-vars_snap == <<snapshot,read_keys,write_keys,state >>
+vars_snap == <<read_keys,write_keys>>
 
 TIMESTAMP == Nat
 
@@ -79,8 +75,24 @@ Mk_msg(type,from,to,msg,timestamp,id) == [type |-> type,from |-> from,to |-> to,
 
 Start_tx(tx) == \E p \in PART:
                 /\ c_status' = [c_status EXCEPT ![tx] = [part |-> p,time |-> Get_time(p)] @@ c_status[tx]]
-                /\ UNCHANGED <<db,inbox,key_part,part_key,time,result>>
-                
+                /\ UNCHANGED <<db,inbox,key_part,part_key,time>>
+
+Read_snap(tx,ret) == /\ state[tx] = "WAIT_READ"
+                     /\ state' = [state EXCEPT ![tx] = IF write_keys[tx] # {} THEN "WRITE" ELSE "DONE"]
+              
+Write_snap_success(tx) == 
+                    /\ state' = [state EXCEPT ![tx] = "DONE"]   
+
+Write_snap_abort(tx) == 
+                    /\ state' = [state EXCEPT ![tx] = "DONE"]
+
+Write_snap(tx,ret) == 
+                /\ state[tx] = "WAIT_WRITE"
+                /\ IF ret.ret = "OK" THEN
+                        Write_snap_abort(tx)
+                    ELSE 
+                        Write_snap_success(tx)
+
 \* set_read - set of keys to be read
 \* tx - transaction id
 Read(set_read,tx) == 
@@ -94,7 +106,7 @@ Read(set_read,tx) ==
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [status|->"READ",tx|->tx,key_set|->set_read,resp|-><<>>] @@ c_status[tx]]
                     /\ Update_time(p)
-                    /\ UNCHANGED <<db,key_part,part_key,result>>
+                    /\ UNCHANGED <<db,key_part,part_key>>
 
 \* set_write - Function that maps the key to the values to write
 \* tx - transaction id
@@ -111,7 +123,7 @@ Write(set_write,tx) ==
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [status |-> "WRITE",tx |-> tx,key_set|-> keys,resp|-><<>>] @@ c_status[tx]]
                     /\ Update_time(p)
-                    /\ UNCHANGED <<db,key_part,part_key,result>>
+                    /\ UNCHANGED <<db,key_part,part_key>>
                                 
 \*----------------------------------------------------
 \* Mesages received by partition not coordenator
@@ -136,11 +148,12 @@ Read_msg(p,msg) == LET
 
                         finish_read(n) == 
                             /\ c_status[tx].status = "READ"
-                            /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type |-> "READ",ret|->new_ret(n)]}]
                             /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
+                            /\ Read_snap(tx,[type |-> "READ",ret|->new_ret(n)])
+
                         normal_read(n) == 
                             /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n)] @@ c_status[tx]]
-                            /\ result' = result
+                            /\ state' = state
                    IN
                         /\ msg.type = "Read"
                         /\ \E n \in (DOMAIN db[key]): 
@@ -177,7 +190,7 @@ Finish_write(p,msg) ==
                          /\ c_status[tx].status = "WRITE"
                          /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,tx|-> NOVAL,key_set |-> {},resp|-> <<>>] @@ c_status[tx]]
                          /\ inbox' = new_inbox(set_msg(t))
-                         /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|-> "WRITE",ret|->"OK"]}] 
+                         /\ Write_snap(tx,[type|-> "WRITE",ret|->"OK"])
 
 
 Write_msg(p,msg) == LET
@@ -190,7 +203,7 @@ Write_msg(p,msg) == LET
                         normal_write == 
                             /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                             /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp] @@ c_status[tx]]
-                            /\ result' = result
+                            /\ state' = state
                     IN
                         /\ msg.type = "Prepare"
                         /\ \A key \in keys: Check_key_write(msg.timestamp,msg.id,key)
@@ -217,7 +230,7 @@ Write_abort(p,msg) == LET
                         /\ ~(\A key \in keys: Check_key_write(msg.timestamp,msg.id,key))
                         /\ db' = [key \in keys |-> Append(db[key],[val|->msg.msg[key],timestamp|->my_time,state|->"ABORTED",tx |-> msg.id])] @@ db
                         /\ inbox' = new_inbox(set_msg)
-                        /\ result' = [result EXCEPT ![tx] = result[tx] \union {[type|->"WRITE",ret|->"ABORT"]}]
+                        /\ Write_snap(tx,[type|-> "WRITE",ret|->"ABORT"])
                         /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
                         /\ Update_time(p)
                         /\ UNCHANGED <<key_part,part_key>>
@@ -235,7 +248,7 @@ Commit_msg(p,msg) == LET
                         /\ db' = new_db
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                         /\ Update_time(p)
-                        /\ UNCHANGED <<key_part,part_key,c_status,result>>
+                        /\ UNCHANGED <<key_part,part_key,c_status,state>>
 
 \* TODO: remove 
 Abort_msg(p,msg) == LET
@@ -249,7 +262,7 @@ Abort_msg(p,msg) == LET
                     /\ db' = aux_db @@ db 
                     /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                     /\ Update_time(p)
-                    /\ UNCHANGED <<key_part,part_key,c_status,result>>
+                    /\ UNCHANGED <<key_part,part_key,c_status,state>>
 
 \*------------------------------------------------------------------------
 \* Message recive by coordinatoor
@@ -266,8 +279,7 @@ Next_part ==  Recv_msg /\ UNCHANGED vars_snap
 
 \* Snapshot model --------------------------------------------------------------
 
-Init_snap == /\ snapshot = [t \in TX_ID |-> [k \in KEY |-> NOVAL]]
-             /\ read_keys = [t \in TX_ID |-> {}]
+Init_snap == /\ read_keys = [t \in TX_ID |-> {}]
              /\ write_keys = [t \in TX_ID |-> {}]
              /\ state = [t \in TX_ID |-> "START"]
 
@@ -278,56 +290,33 @@ Start(tx) == /\ state[tx] = "START"
                         /\ rk \union wk # {}
                         /\ read_keys' = [read_keys EXCEPT ![tx] = rk]
                         /\ write_keys' = [write_keys EXCEPT ![tx] = wk]
-            /\ state' = [state EXCEPT ![tx] = "READ"]  
-            /\ Start_tx(tx)
-            /\ UNCHANGED <<snapshot,result>>
+             /\ state' = [state EXCEPT ![tx] = "READ"]  
+             /\ Start_tx(tx)
 
 Start_read(tx) == /\ state[tx] = "READ"
                   /\ read_keys[tx] # {}
                   /\ state' = [state EXCEPT ![tx] = "WAIT_READ"]
                   /\ Read(read_keys[tx],tx)
-                  /\ UNCHANGED <<snapshot,read_keys,write_keys,result>>
+                  /\ UNCHANGED <<read_keys,write_keys>>
 
 Start_read_empty(tx) == /\ state[tx] = "READ"
                         /\ read_keys[tx] = {}
                         /\ state' = [state EXCEPT ![tx] = "WRITE"]
-                        /\ UNCHANGED <<snapshot,read_keys,inbox,write_keys,result,c_status,time>>
-
-Read_snap(tx) == /\ state[tx] = "WAIT_READ"
-                 /\ \E ret \in result[tx]: (ret.type = "READ"
-                    /\ snapshot' = [snapshot EXCEPT ![tx] =  ret.ret @@ snapshot[tx]]
-                    /\ result' = [result EXCEPT ![tx] = result[tx] \ {ret}])
-                 /\ state' = [state EXCEPT ![tx] = IF write_keys[tx] # {} THEN "WRITE" ELSE "DONE"]
-                 /\ UNCHANGED <<read_keys,write_keys,inbox,c_status,time>>
+                        /\ UNCHANGED <<read_keys,inbox,write_keys,c_status,time>>
 
 Start_write(tx) == /\ state[tx] = "WRITE"
                    /\ Write([key \in write_keys[tx] |-> tx],tx)
                    /\ state' = [state EXCEPT ![tx] = "WAIT_WRITE"]
-                   /\ UNCHANGED <<snapshot,read_keys,write_keys,result>>
-
-Write_snap_success(tx) == /\ snapshot' = [snapshot EXCEPT ![tx] = [key \in write_keys[tx] |-> tx]]
-                     /\ state' = [state EXCEPT ![tx] = "DONE"] 
-                     /\ UNCHANGED <<read_keys,write_keys,inbox,c_status,time>> 
-
-Write_snap_abort(tx) == /\ state' = [state EXCEPT ![tx] = "DONE"]
-                   /\ UNCHANGED <<read_keys,write_keys,snapshot,inbox,c_status,time>>
-
-Write_snap(tx) == /\ state[tx] = "WAIT_WRITE"
-             /\ \E ret \in result[tx]: ret.type = "WRITE"
-             /\ result' = [result EXCEPT ![tx] = result[tx]\ {ret}]
-             /\ IF ret.ret = "OK" THEN
-                    Write_snap_abort(tx)
-                ELSE 
-                    Write_snap_success(tx)
+                   /\ UNCHANGED <<read_keys,write_keys>>
 
 Terminating == \A tx \in TX_ID: state[tx] = "DONE" /\ UNCHANGED vars
 
   
-Next_snap == ((\E tx \in TX_ID: Start(tx) \/ Start_read(tx) \/ Start_read_empty(tx) \/ Read_snap(tx) \/ Start_write(tx) \/ Write_snap(tx)) \/ Terminating) /\ UNCHANGED vars_part
+Next_snap == ((\E tx \in TX_ID: Start(tx) \/ Start_read(tx) \/ Start_read_empty(tx) \/ Start_write(tx)) \/ Terminating) /\ UNCHANGED vars_part
 
 \*---------------------------------------------------------------------------------
 
-Init == Init_part /\ Init_snap /\ result = [tx \in TX_ID |-> {}]
+Init == Init_part /\ Init_snap 
 
 Next == Next_snap \/ Next_part
 
