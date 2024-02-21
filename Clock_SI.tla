@@ -24,12 +24,14 @@ VARIABLES
           state     \* Function that maps a transaction to is current state
             
 vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state>>
-vars_part == <<db,key_part,part_key>>
+vars_part == <<key_part,part_key>>
 vars_snap == <<read_keys,write_keys>>
 
 TIMESTAMP == Nat
 
 START_TIMESTAMP == 1
+
+\* Data types --------------------------------------------------------
 
 \* Possible states for a database entry
 STATE_ENTRY == {"COMMITTED","PREPARED","ABORTED"}
@@ -52,13 +54,7 @@ COORDINATOR_STATUS == {"INACTIVE","READ","WRITE","COMPLETE"}
 \* resp -> stores the result of the last operation performed(Write: {"OK","ABORT"},Read: [KEY -> VALUE])
 COORDINATOR_ENTRY == [status: COORDINATOR_STATUS,key_set:SUBSET KEY,part:PART \union {NOVAL},time:TIMESTAMP,resp:[KEY->VALUES \union {NOVAL,"OK","ABORT"}]]
 
-Init_part == 
-        /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
-        /\ inbox = [p \in PART |-> {}]
-        /\ key_part \in [KEY -> PART] /\ (\A p \in PART: \E k \in KEY: key_part[k] = p)
-        /\ part_key = [p \in PART |-> {k \in KEY: key_part[k] = p}]
-        /\ c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|->NOVAL,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
-        /\ time = START_TIMESTAMP
+\* Auxiliar functions --------------------------------------------
 
 \* Retrive the current time 
 Get_time(p) == time
@@ -72,6 +68,37 @@ Send_msg(set_msg) == LET
 
 \* Auxiliar to make a message 
 Mk_msg(type,from,to,msg,timestamp,id) == [type |-> type,from |-> from,to |-> to, msg |-> msg, timestamp |-> timestamp,id|->id]
+
+
+\* Checks if there is a conflict write or if already as recive an abort message
+\* if commited the commit timestamp must be lower
+\* if aborted then the transaction must be different
+\* if there is a entry in prepared state then it aborts 
+Check_key_write(timestamp,tx,key) == \A n \in (DOMAIN db[key]):
+                                      \/ (db[key][n].state = "COMMITTED" /\ db[key][n].timestamp < timestamp) 
+                                      \/ (db[key][n].state = "ABORTED" /\ db[key][n].tx # tx)
+                                      \/ (db[key][n].state # "PREPARED") 
+
+\* Checks if the entry choosen has a valid timestamp and if it is committed
+\* then compares to all orther entrys to verify it is the latest entry available to that timestamp
+\* It returns false if there is entry in committing state with greter timestamp that are valid choises
+Check_key_read(timestamp,key,entry) == /\ timestamp > entry.timestamp
+                                       /\ entry.state = "COMMITTED"
+                                       /\ \A n \in (DOMAIN db[key]):
+                                         ((entry.timestamp > db[key][n].timestamp /\ db[key][n].timestamp < timestamp) \/ 
+                                           db[key][n] = entry \/
+                                           db[key][n].timestamp >= timestamp \/ 
+                                           db[key][n].state = "ABORTED")
+
+\*  -----------------------------------------------------------------------------------
+
+Init_part == 
+        /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
+        /\ inbox = [p \in PART |-> {}]
+        /\ key_part \in [KEY -> PART] /\ (\A p \in PART: \E k \in KEY: key_part[k] = p)
+        /\ part_key = [p \in PART |-> {k \in KEY: key_part[k] = p}]
+        /\ c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|->NOVAL,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
+        /\ time = START_TIMESTAMP
 
 Start_tx(tx) == \E p \in PART:
                 /\ c_status' = [c_status EXCEPT ![tx] = [part |-> p,time |-> Get_time(p)] @@ c_status[tx]]
@@ -87,7 +114,7 @@ Write_snap_abort(tx) ==
                     /\ state' = [state EXCEPT ![tx] = "DONE"]
 
 Write_snap(tx,ret) == 
-                /\ state[tx] = "WAIT_WRITE"
+                \*/\ state[tx] = "WAIT_WRITE"
                 /\ IF ret.ret = "OK" THEN
                         Write_snap_abort(tx)
                     ELSE 
@@ -108,9 +135,7 @@ Read(set_read,tx) ==
                     /\ Update_time(p)
                     /\ UNCHANGED <<db,key_part,part_key>>
 
-\* set_write - Function that maps the key to the values to write
-\* tx - transaction id
-Write(set_write,tx) == 
+Distributed_write(set_write,tx) == 
                 LET 
                     p == c_status[tx].part
                     keys == DOMAIN set_write
@@ -122,22 +147,26 @@ Write(set_write,tx) ==
                     /\ c_status[tx].status = "INACTIVE"
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [status |-> "WRITE",tx |-> tx,key_set|-> keys,resp|-><<>>] @@ c_status[tx]]
+                    /\ UNCHANGED <<db,key_part,part_key,time>>
+
+Local_write(set_write,tx) == 
+                LET
+                    p == c_status[tx].part
+                    keys == DOMAIN set_write
+                    my_time == Get_time(p)
+                    can_write == \A key \in keys: Check_key_write(my_time,tx,key)                   
+                IN
+                    /\ c_status[tx].status = "INACTIVE"
                     /\ Update_time(p)
-                    /\ UNCHANGED <<db,key_part,part_key>>
-                                
+                    /\ IF can_write 
+                       THEN db' = [key \in keys |-> Append(db[key],[val|->set_write[key],timestamp|->my_time,state|->"COMMITTED",tx|->tx])] @@ db  /\
+                            Write_snap(tx,[type|-> "WRITE",ret|->"OK"])
+                       ELSE db' = [key \in keys |-> Append(db[key],[val|->set_write[key],timestamp|->my_time,state|->"ABORTED",tx|->tx])] @@ db  /\
+                            Write_snap(tx,[type|-> "WRITE",ret|->"ABORT"])
+                    /\ UNCHANGED <<key_part,part_key,inbox,c_status>>
+
 \*----------------------------------------------------
 \* Mesages received by partition not coordenator
-
-\* Checks if the entry choosen has a valid timestamp and if it is committed
-\* then compares to all orther entrys to verify it is the latest entry available to that timestamp
-\* It returns false if there is entry in committing state with greter timestamp that are valid choises
-Check_key_read(timestamp,key,entry) == /\ timestamp > entry.timestamp
-                                       /\ entry.state = "COMMITTED"
-                                       /\ \A n \in (DOMAIN db[key]):
-                                         ((entry.timestamp > db[key][n].timestamp /\ db[key][n].timestamp < timestamp) \/ 
-                                           db[key][n] = entry \/
-                                           db[key][n].timestamp >= timestamp \/ 
-                                           db[key][n].state = "ABORTED")
 
 Read_msg(p,msg) == LET
                         tx == msg.id
@@ -163,15 +192,6 @@ Read_msg(p,msg) == LET
                         /\ Update_time(p)
                         /\ UNCHANGED <<db,key_part,part_key>>
 
-
-\* Checks if there is a conflict write or if already as recive an abort message
-\* if commited the commit timestamp must be lower
-\* if aborted then the transaction must be different
-\* if there is a entry in prepared state then it aborts 
-Check_key_write(timestamp,tx,key) == \A n \in (DOMAIN db[key]):
-                                      \/ (db[key][n].state = "COMMITTED" /\ db[key][n].timestamp < timestamp) 
-                                      \/ (db[key][n].state = "ABORTED" /\ db[key][n].tx # tx)
-                                      \/ (db[key][n].state # "PREPARED") 
 
 Finish_write(p,msg) == 
                     LET
@@ -297,16 +317,21 @@ Start_read(tx) == /\ state[tx] = "READ"
                   /\ read_keys[tx] # {}
                   /\ state' = [state EXCEPT ![tx] = "WAIT_READ"]
                   /\ Read(read_keys[tx],tx)
-                  /\ UNCHANGED <<read_keys,write_keys>>
+                  /\ UNCHANGED <<read_keys,write_keys,db>>
 
 Start_read_empty(tx) == /\ state[tx] = "READ"
                         /\ read_keys[tx] = {}
                         /\ state' = [state EXCEPT ![tx] = "WRITE"]
-                        /\ UNCHANGED <<read_keys,inbox,write_keys,c_status,time>>
+                        /\ UNCHANGED <<read_keys,inbox,write_keys,c_status,time,db>>
 
-Start_write(tx) == /\ state[tx] = "WRITE"
-                   /\ Write([key \in write_keys[tx] |-> tx],tx)
-                   /\ state' = [state EXCEPT ![tx] = "WAIT_WRITE"]
+Start_write(tx) == LET
+                        p == c_status[tx].part
+                        flag == (write_keys[tx] \intersect part_key[p]) = write_keys[tx]
+                   IN
+                   /\ state[tx] = "WRITE"
+                   /\ IF flag THEN Local_write([key \in write_keys[tx] |-> tx],tx) 
+                      ELSE Distributed_write([key \in write_keys[tx] |-> tx],tx) /\ 
+                           state' = [state EXCEPT ![tx] = "WAIT_WRITE"]
                    /\ UNCHANGED <<read_keys,write_keys>>
 
 Terminating == \A tx \in TX_ID: state[tx] = "DONE" /\ UNCHANGED vars
