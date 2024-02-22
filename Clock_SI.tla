@@ -22,7 +22,7 @@ VARIABLES
           read_keys, \* Function that maps a transaction to a set of keys to read 
           write_keys,\* Function that maps a transaction to a set of keys to write 
           state     \* Function that maps a transaction to is current state
-            
+
 vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state>>
 vars_part == <<key_part,part_key>>
 vars_snap == <<read_keys,write_keys>>
@@ -46,13 +46,14 @@ DB_ENTRY == [val:VALUES \union {NOVAL},state:STATE_ENTRY,timestamp:TIMESTAMP,tx:
 \* Possible states for a coordinator
 COORDINATOR_STATUS == {"INACTIVE","READ","WRITE","COMPLETE"}
 
+
 \* State needed by a coordinator
 \* status -> stores the operation the coordinator is performing
 \* key_set -> stores the keys that did not respond yet
 \* part -> partition responsible by this transaction
 \* time -> start timestamp of the transaction
 \* resp -> stores the result of the last operation performed(Write: {"OK","ABORT"},Read: [KEY -> VALUE])
-COORDINATOR_ENTRY == [status: COORDINATOR_STATUS,key_set:SUBSET KEY,part:PART \union {NOVAL},time:TIMESTAMP,resp:[KEY->VALUES \union {NOVAL,"OK","ABORT"}]]
+COORDINATOR_ENTRY == [status: COORDINATOR_STATUS,key_set:SUBSET KEY,part:PART \union {NOVAL},time:TIMESTAMP,resp:UNION {[x -> VALUES] : x \in SUBSET KEY}]
 
 \* Auxiliar functions --------------------------------------------
 
@@ -298,6 +299,7 @@ Next_part ==  Recv_msg /\ UNCHANGED vars_snap
 
 Init_snap == /\ read_keys \in [TX_ID -> SUBSET KEY]
              /\ write_keys \in [TX_ID -> SUBSET KEY]
+             /\ \A tx \in TX_ID: (read_keys[tx] \union write_keys[tx]) # {}
              /\ state = [t \in TX_ID |-> "READ"]
 
 Start_read(tx) == /\ state[tx] = "READ"
@@ -333,6 +335,15 @@ Init == Init_part /\ Init_snap
 Next == Next_snap \/ Next_part
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
+
+Type_OK == /\ state \in [TX_ID -> {"READ","WAIT_READ","WRITE","WAIT_WRITE","DONE"}]
+           /\ write_keys \in [TX_ID -> SUBSET KEY]
+           /\ read_keys \in [TX_ID -> SUBSET KEY]
+           /\ time \in TIMESTAMP
+           /\ c_status \in [TX_ID -> COORDINATOR_ENTRY]
+           /\ part_key \in [PART -> SUBSET KEY]
+           /\ key_part \in [KEY -> PART]
+           /\ db \in [KEY -> Seq(DB_ENTRY)]
 
 All_finish == <> (\A tx \in TX_ID:state[tx] = "DONE")
 
