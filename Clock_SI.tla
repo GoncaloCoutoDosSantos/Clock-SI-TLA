@@ -97,12 +97,9 @@ Init_part ==
         /\ inbox = [p \in PART |-> {}]
         /\ key_part \in [KEY -> PART] /\ (\A p \in PART: \E k \in KEY: key_part[k] = p)
         /\ part_key = [p \in PART |-> {k \in KEY: key_part[k] = p}]
-        /\ c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|->NOVAL,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
+        /\ \E p \in PART:
+            c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|-> p,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
         /\ time = START_TIMESTAMP
-
-Start_tx(tx) == \E p \in PART:
-                /\ c_status' = [c_status EXCEPT ![tx] = [part |-> p,time |-> Get_time(p)] @@ c_status[tx]]
-                /\ UNCHANGED <<db,inbox,key_part,part_key,time>>
 
 Read_snap(tx,ret) == /\ state[tx] = "WAIT_READ"
                      /\ state' = [state EXCEPT ![tx] = IF write_keys[tx] # {} THEN "WRITE" ELSE "DONE"]
@@ -126,12 +123,12 @@ Read(set_read,tx) ==
                 LET
                     p == c_status[tx].part
                     parts_msg == {part \in PART: \E k \in set_read: key_part[k] = part} \* set with ids to partitoin to message
-                    timestamp == c_status[tx].time
+                    timestamp == Get_time(p)
                     set_msg == {Mk_msg("Read",p,key_part[key],key,timestamp,tx): key \in set_read} 
                 IN
                     /\ c_status[tx].status = "INACTIVE"
                     /\ inbox' = Send_msg(set_msg)
-                    /\ c_status' = [c_status EXCEPT ![tx] = [status|->"READ",tx|->tx,key_set|->set_read,resp|-><<>>] @@ c_status[tx]]
+                    /\ c_status' = [c_status EXCEPT ![tx] = [time|->timestamp,status|->"READ",tx|->tx,key_set|->set_read,resp|-><<>>] @@ c_status[tx]]
                     /\ Update_time(p)
                     /\ UNCHANGED <<db,key_part,part_key>>
 
@@ -299,19 +296,9 @@ Next_part ==  Recv_msg /\ UNCHANGED vars_snap
 
 \* Snapshot model --------------------------------------------------------------
 
-Init_snap == /\ read_keys = [t \in TX_ID |-> {}]
-             /\ write_keys = [t \in TX_ID |-> {}]
-             /\ state = [t \in TX_ID |-> "START"]
-
-
-Start(tx) == /\ state[tx] = "START"
-             /\ \E rk \in SUBSET KEY:
-                    \E wk \in SUBSET KEY:
-                        /\ rk \union wk # {}
-                        /\ read_keys' = [read_keys EXCEPT ![tx] = rk]
-                        /\ write_keys' = [write_keys EXCEPT ![tx] = wk]
-             /\ state' = [state EXCEPT ![tx] = "READ"]  
-             /\ Start_tx(tx)
+Init_snap == /\ read_keys \in [TX_ID -> SUBSET KEY]
+             /\ write_keys \in [TX_ID -> SUBSET KEY]
+             /\ state = [t \in TX_ID |-> "READ"]
 
 Start_read(tx) == /\ state[tx] = "READ"
                   /\ read_keys[tx] # {}
@@ -337,7 +324,7 @@ Start_write(tx) == LET
 Terminating == \A tx \in TX_ID: state[tx] = "DONE" /\ UNCHANGED vars
 
   
-Next_snap == ((\E tx \in TX_ID: Start(tx) \/ Start_read(tx) \/ Start_read_empty(tx) \/ Start_write(tx)) \/ Terminating) /\ UNCHANGED vars_part
+Next_snap == ((\E tx \in TX_ID: Start_read(tx) \/ Start_read_empty(tx) \/ Start_write(tx)) \/ Terminating) /\ UNCHANGED vars_part
 
 \*---------------------------------------------------------------------------------
 
