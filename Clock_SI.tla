@@ -22,11 +22,20 @@ VARIABLES
 
           read_keys, \* Function that maps a transaction to a set of keys to read 
           write_keys,\* Function that maps a transaction to a set of keys to write 
-          state     \* Function that maps a transaction to is current state
+          state,     \* Function that maps a transaction to is current state
+\* Client-centric variables
+          ops
 
-vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state>>
+vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state,ops>>
 vars_part == <<key_part,part_key>>
 vars_snap == <<read_keys,write_keys>>
+
+CC == INSTANCE ClientCentric WITH Keys <- KEY, Values <- TX_ID \union {NOVAL}          
+    
+\* for instantiating the ClientCentric module
+wOp(k,v) == CC!w(k,v)
+rOp(k,v) == CC!r(k,v)
+InitialState == [k \in KEY |-> NOVAL]
 
 START_TIMESTAMP == 1
 
@@ -110,12 +119,15 @@ Init_part ==
 
 Read_snap(tx,ret) == /\ state[tx] = "WAIT_READ"
                      /\ state' = [state EXCEPT ![tx] = IF write_keys[tx] # {} THEN "WRITE" ELSE "DONE"]
+                     /\ ops' = ops \union {rOp(key,ret.ret[key]):key \in read_keys[tx]}
               
 Write_snap_success(tx) == 
                     /\ state' = [state EXCEPT ![tx] = "DONE"]   
+                    /\ ops' = ops \union {wOp(key,tx):key \in write_keys[tx]}
 
 Write_snap_abort(tx) == 
                     /\ state' = [state EXCEPT ![tx] = "DONE"]
+                    /\ ops' = ops
 
 Write_snap(tx,ret) == 
                 \*/\ state[tx] = "WAIT_WRITE"
@@ -137,7 +149,7 @@ Read(set_read,tx) ==
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [time|->timestamp,status|->"READ",tx|->tx,key_set|->set_read,resp|-><<>>] @@ c_status[tx]]
                     /\ Update_time(p)
-                    /\ UNCHANGED <<db,key_part,part_key>>
+                    /\ UNCHANGED <<db,key_part,part_key,ops>>
 
 Distributed_write(set_write,tx) == 
                 LET 
@@ -151,7 +163,7 @@ Distributed_write(set_write,tx) ==
                     /\ c_status[tx].status = "INACTIVE"
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [status |-> "WRITE",tx |-> tx,key_set|-> keys,resp|-><<>>] @@ c_status[tx]]
-                    /\ UNCHANGED <<db,key_part,part_key,time>>
+                    /\ UNCHANGED <<db,key_part,part_key,time,ops>>
 
 Local_write(set_write,tx) == 
                 LET
@@ -187,6 +199,7 @@ Read_msg(p,msg,my_time) == LET
                         normal_read(n) == 
                             /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n)] @@ c_status[tx]]
                             /\ state' = state
+                            /\ ops' = ops
                    IN
                         /\ msg.type = "Read"
                         /\ \E n \in (DOMAIN db[key]): 
@@ -226,6 +239,7 @@ Write_msg(p,msg,my_time) == LET
                             /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                             /\ c_status' = [c_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp] @@ c_status[tx]]
                             /\ state' = state
+                            /\ ops' = ops
                     IN
                         /\ msg.type = "Prepare"
                         /\ \A key \in keys: Check_key_write(msg.timestamp,msg.id,key)
@@ -266,7 +280,7 @@ Commit_msg(p,msg,my_time) == LET
                         /\ \A key \in msg.msg:\E n \in 1..Len(db[key]):db[key][n].state = "PREPARED" \* If it fails something is wrong
                         /\ db' = new_db
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ UNCHANGED <<key_part,part_key,c_status,state>>
+                        /\ UNCHANGED <<key_part,part_key,c_status,state,ops>>
 
 \* TODO: remove 
 Abort_msg(p,msg,my_time) == LET
@@ -279,14 +293,14 @@ Abort_msg(p,msg,my_time) == LET
                     /\ \A key \in msg.msg:\E n \in 1..Len(db[key]): db[key][n].state = "PREPARED"
                     /\ db' = aux_db @@ db 
                     /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                    /\ UNCHANGED <<key_part,part_key,c_status,state>>
+                    /\ UNCHANGED <<key_part,part_key,c_status,state,ops>>
 
 \*------------------------------------------------------------------------
 \* Message recive by coordinatoor
 
 Recv_msg == LET
                 t(p,msg) == IF Get_time(p) > msg.timestamp THEN Get_time(p) ELSE msg.timestamp
-                update_t(p,msg) == IF Get_time(p) > msg.timestamp THEN Update_time(p) ELSE time' = [time EXCEPT ![p] = msg.timestamp]
+                update_t(p,msg) == IF Get_time(p) > msg.timestamp THEN Update_time(p) ELSE \E d_time \in TIME_DELTA:time' = [time EXCEPT ![p] = msg.timestamp + d_time] 
             IN
                 \E p \in PART:\E msg \in inbox[p]:
                 ((   Abort_msg(p,msg,t(p,msg))
@@ -310,12 +324,12 @@ Start_read(tx) == /\ state[tx] = "READ"
                   /\ read_keys[tx] # {}
                   /\ state' = [state EXCEPT ![tx] = "WAIT_READ"]
                   /\ Read(read_keys[tx],tx)
-                  /\ UNCHANGED <<read_keys,write_keys,db>>
+                  /\ UNCHANGED <<read_keys,write_keys,db,ops>>
 
 Start_read_empty(tx) == /\ state[tx] = "READ"
                         /\ read_keys[tx] = {}
                         /\ state' = [state EXCEPT ![tx] = "WRITE"]
-                        /\ UNCHANGED <<read_keys,inbox,write_keys,c_status,time,db>>
+                        /\ UNCHANGED <<read_keys,inbox,write_keys,c_status,time,db,ops>>
 
 Start_write(tx) == LET
                         p == c_status[tx].part
@@ -334,7 +348,7 @@ Next_snap == ((\E tx \in TX_ID: Start_read(tx) \/ Start_read_empty(tx) \/ Start_
 
 \*---------------------------------------------------------------------------------
 
-Init == Init_part /\ Init_snap 
+Init == Init_part /\ Init_snap /\ ops = {}
 
 Next == Next_snap \/ Next_part 
 
@@ -348,6 +362,8 @@ Type_OK == /\ state \in [TX_ID -> {"READ","WAIT_READ","WRITE","WAIT_WRITE","DONE
            /\ part_key \in [PART -> SUBSET KEY]
            /\ key_part \in [KEY -> PART]
            /\ db \in [KEY -> Seq(DB_ENTRY)]
+
+SnapshotIsolation == CC!SnapshotIsolation(InitialState, ops)
 
 All_finish == <> (\A tx \in TX_ID:state[tx] = "DONE")
 
