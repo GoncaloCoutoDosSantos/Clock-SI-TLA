@@ -6,7 +6,9 @@ CONSTANTS KEY,       \* Set of all keys
           NOVAL,     \* the value null 
           PART,      \* Number of partitons
           TX_ID,     \* transactions ID's
-          TIME_DELTA \* Max update to time 
+          TIME_DELTA,\* Max update to time 
+          KEY_PART,  \* Function that maps a key to a partition
+          PART_KEY   \* Function that maps a partition to a key
 
 ASSUME TIME_DELTA \in SUBSET Nat
 
@@ -14,8 +16,6 @@ VARIABLES
 \* Partition variables 
           db,         \* Function that represents Key-value database
           inbox,      \* Function that maps a partition to his inbox
-          key_part,   \* Function that maps a key to a partition  
-          part_key,   \* Function that maps a partition to a key
           c_status,   \* Function that maps a coordinator of a transaction to is status 
           time,       \* Simulation of real time 
 \* Snapshot variables 
@@ -26,8 +26,7 @@ VARIABLES
 \* Client-centric variables
           ops
 
-vars      == <<db,inbox,key_part,part_key,c_status,time,read_keys,write_keys,state,ops>>
-vars_part == <<key_part,part_key>>
+vars      == <<db,inbox,c_status,time,read_keys,write_keys,state,ops>>
 vars_snap == <<read_keys,write_keys>>
 
 CC == INSTANCE ClientCentric WITH Keys <- KEY, Values <- TX_ID \union {NOVAL}          
@@ -75,7 +74,7 @@ Get_time(p) == time[p]
 Update_time(p) == \E delta \in TIME_DELTA: time' = [time EXCEPT ![p] = time[p] + delta]
 
 Sync_time(p) == /\ \E p1 \in PART: p # p1 /\ time[p] < time[p1] /\ time' = [time EXCEPT ![p] = time[p1]] 
-                /\ UNCHANGED <<c_status, db, inbox, key_part, part_key, read_keys, state, write_keys>>
+                /\ UNCHANGED <<c_status, db, inbox, read_keys, state, write_keys>>
 
 Send_msg(set_msg) == LET
                         aux == [p \in PART|-> {m \in set_msg:m.to = p}]
@@ -111,8 +110,6 @@ Check_key_read(timestamp,key,entry) == /\ timestamp > entry.timestamp
 Init_part == 
         /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
         /\ inbox = [p \in PART |-> {}]
-        /\ key_part \in [KEY -> PART] /\ (\A p \in PART: \E k \in KEY: key_part[k] = p)
-        /\ part_key = [p \in PART |-> {k \in KEY: key_part[k] = p}]
         /\ \E p \in PART:
             c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|-> p,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
         /\ time = [p \in PART |-> START_TIMESTAMP]
@@ -141,29 +138,29 @@ Write_snap(tx,ret) ==
 Read(set_read,tx) == 
                 LET
                     p == c_status[tx].part
-                    parts_msg == {part \in PART: \E k \in set_read: key_part[k] = part} \* set with ids to partitoin to message
+                    parts_msg == {part \in PART: \E k \in set_read: KEY_PART[k] = part} \* set with ids to partitoin to message
                     timestamp == Get_time(p)
-                    set_msg == {Mk_msg("Read",p,key_part[key],key,timestamp,tx): key \in set_read} 
+                    set_msg == {Mk_msg("Read",p,KEY_PART[key],key,timestamp,tx): key \in set_read} 
                 IN
                     /\ c_status[tx].status = "INACTIVE"
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [time|->timestamp,status|->"READ",tx|->tx,key_set|->set_read,resp|-><<>>] @@ c_status[tx]]
                     /\ Update_time(p)
-                    /\ UNCHANGED <<db,key_part,part_key,ops>>
+                    /\ UNCHANGED <<db,ops>>
 
 Distributed_write(set_write,tx) == 
                 LET 
                     p == c_status[tx].part
                     keys == DOMAIN set_write
-                    parts_msg == {part \in PART: \E k \in keys: key_part[k] = part} \* set with ids to partitoin to message
-                    part_write == [part \in parts_msg |-> [key \in (part_key[part] \intersect keys) |-> set_write[key]]]
+                    parts_msg == {part \in PART: \E k \in keys: KEY_PART[k] = part} \* set with ids to partitoin to message
+                    part_write == [part \in parts_msg |-> [key \in (PART_KEY[part] \intersect keys) |-> set_write[key]]]
                     timestamp == c_status[tx].time
                     set_msg == {Mk_msg("Prepare",p,part,part_write[part],timestamp,tx): part \in parts_msg} 
                 IN 
                     /\ c_status[tx].status = "INACTIVE"
                     /\ inbox' = Send_msg(set_msg)
                     /\ c_status' = [c_status EXCEPT ![tx] = [status |-> "WRITE",tx |-> tx,key_set|-> keys,resp|-><<>>] @@ c_status[tx]]
-                    /\ UNCHANGED <<db,key_part,part_key,time,ops>>
+                    /\ UNCHANGED <<db,time,ops>>
 
 Local_write(set_write,tx) == 
                 LET
@@ -179,7 +176,7 @@ Local_write(set_write,tx) ==
                             Write_snap(tx,[type|-> "WRITE",ret|->"OK"])
                        ELSE db' = [key \in keys |-> Append(db[key],[val|->set_write[key],timestamp|->my_time,state|->"ABORTED",tx|->tx])] @@ db  /\
                             Write_snap(tx,[type|-> "WRITE",ret|->"ABORT"])
-                    /\ UNCHANGED <<key_part,part_key,inbox,c_status>>
+                    /\ UNCHANGED <<inbox,c_status>>
 
 \*----------------------------------------------------
 \* Mesages received by partition not coordenator
@@ -206,7 +203,7 @@ Read_msg(p,msg,my_time) == LET
                             Check_key_read(msg.timestamp,key,db[key][n]) /\ 
                             IF c_status[tx].key_set = {key} THEN finish_read(n) ELSE normal_read(n)
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ UNCHANGED <<db,key_part,part_key>>
+                        /\ UNCHANGED <<db>>
 
 
 Finish_write(p,msg,my_time) == 
@@ -216,8 +213,8 @@ Finish_write(p,msg,my_time) ==
                         all_keys == keys \union (DOMAIN msg.msg)
                         times == {c_status[tx].resp[key]: key \in keys} \union {my_time}
                         t == CHOOSE t \in times: \A t1 \in times: t >= t1
-                        parts_msg == {part \in PART: \E k \in all_keys: key_part[k] = part} \* set with ids to partitoin to message
-                        set_msg(t_max) == {Mk_msg("Commit",p,part,all_keys \intersect part_key[part],t_max,tx):part \in parts_msg}
+                        parts_msg == {part \in PART: \E k \in all_keys: KEY_PART[k] = part} \* set with ids to partitoin to message
+                        set_msg(t_max) == {Mk_msg("Commit",p,part,all_keys \intersect PART_KEY[part],t_max,tx):part \in parts_msg}
 
                         new_inbox(msg_set) == 
                             [part \in (PART \ {p}) |->{m \in msg_set:m.to = part} \union inbox[part]] @@ 
@@ -245,7 +242,6 @@ Write_msg(p,msg,my_time) == LET
                         /\ \A key \in keys: Check_key_write(msg.timestamp,msg.id,key)
                         /\ IF c_status[tx].key_set = keys THEN Finish_write(p,msg,my_time) ELSE normal_write
                         /\ db' = [key \in keys |-> Append(db[key],[val|->msg.msg[key],timestamp|->my_time,state|->"PREPARED",tx|->msg.id])] @@ db 
-                        /\ UNCHANGED <<key_part,part_key>>
 
 
 
@@ -254,8 +250,8 @@ Write_abort(p,msg,my_time) == LET
                         keys == DOMAIN msg.msg
                         all_keys == (c_status[tx].key_set \union (DOMAIN c_status[tx].resp)) \ keys
 
-                        part_msg == {part \in PART: \A k \in all_keys: key_part[k] = part} \* set with ids to partitoin to message
-                        part_abort == [part \in part_msg |-> (part_key[part] \intersect all_keys)]
+                        part_msg == {part \in PART: \A k \in all_keys: KEY_PART[k] = part} \* set with ids to partitoin to message
+                        part_abort == [part \in part_msg |-> (PART_KEY[part] \intersect all_keys)]
                         set_msg == {Mk_msg("Abort",p,part,part_abort[part],msg.timestamp,msg.id):part \in part_msg}
 
                         new_inbox(msg_set) == [part \in (PART \ {p}) |->{m \in msg_set:m.to = part} \union inbox[part]] @@ [part \in {p}|->inbox[part]\{msg}]
@@ -266,7 +262,6 @@ Write_abort(p,msg,my_time) == LET
                         /\ inbox' = new_inbox(set_msg)
                         /\ Write_snap(tx,[type|-> "WRITE",ret|->"ABORT"])
                         /\ c_status' = [c_status EXCEPT ![tx] = [status|->"INACTIVE",time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>] @@ c_status[tx]]
-                        /\ UNCHANGED <<key_part,part_key>>
 
 \* TODO: remove 
 Commit_msg(p,msg,my_time) == LET
@@ -280,7 +275,7 @@ Commit_msg(p,msg,my_time) == LET
                         /\ \A key \in msg.msg:\E n \in 1..Len(db[key]):db[key][n].state = "PREPARED" \* If it fails something is wrong
                         /\ db' = new_db
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                        /\ UNCHANGED <<key_part,part_key,c_status,state,ops>>
+                        /\ UNCHANGED <<c_status,state,ops>>
 
 \* TODO: remove 
 Abort_msg(p,msg,my_time) == LET
@@ -293,7 +288,7 @@ Abort_msg(p,msg,my_time) == LET
                     /\ \A key \in msg.msg:\E n \in 1..Len(db[key]): db[key][n].state = "PREPARED"
                     /\ db' = aux_db @@ db 
                     /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
-                    /\ UNCHANGED <<key_part,part_key,c_status,state,ops>>
+                    /\ UNCHANGED <<c_status,state,ops>>
 
 \*------------------------------------------------------------------------
 \* Message recive by coordinatoor
@@ -333,7 +328,7 @@ Start_read_empty(tx) == /\ state[tx] = "READ"
 
 Start_write(tx) == LET
                         p == c_status[tx].part
-                        flag == (write_keys[tx] \intersect part_key[p]) = write_keys[tx]
+                        flag == (write_keys[tx] \intersect PART_KEY[p]) = write_keys[tx]
                    IN
                    /\ state[tx] = "WRITE"
                    /\ IF flag THEN Local_write([key \in write_keys[tx] |-> tx],tx) 
@@ -344,7 +339,7 @@ Start_write(tx) == LET
 Terminating == \A tx \in TX_ID: state[tx] = "DONE" /\ UNCHANGED vars
 
   
-Next_snap == ((\E tx \in TX_ID: Start_read(tx) \/ Start_read_empty(tx) \/ Start_write(tx)) \/ Terminating) /\ UNCHANGED vars_part
+Next_snap == ((\E tx \in TX_ID: Start_read(tx) \/ Start_read_empty(tx) \/ Start_write(tx)) \/ Terminating) 
 
 \*---------------------------------------------------------------------------------
 
@@ -359,11 +354,11 @@ Type_OK == /\ state \in [TX_ID -> {"READ","WAIT_READ","WRITE","WAIT_WRITE","DONE
            /\ read_keys \in [TX_ID -> SUBSET KEY]
            /\ time \in TIMESTAMP
            /\ c_status \in [TX_ID -> COORDINATOR_ENTRY]
-           /\ part_key \in [PART -> SUBSET KEY]
-           /\ key_part \in [KEY -> PART]
+           /\ PART_KEY \in [PART -> SUBSET KEY]
+           /\ KEY_PART \in [KEY -> PART]
            /\ db \in [KEY -> Seq(DB_ENTRY)]
 
-SnapshotIsolation == CC!SnapshotIsolation(InitialState, ops)
+SnapshotIsolation == (\A tx \in TX_ID: state[tx] = "DONE") => CC!SnapshotIsolation(InitialState, ops)
 
 All_finish == <> (\A tx \in TX_ID:state[tx] = "DONE")
 
