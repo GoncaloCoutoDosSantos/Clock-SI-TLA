@@ -12,6 +12,8 @@ CONSTANTS KEY,       \* Set of all keys
 
 ASSUME TIME_DELTA \in SUBSET Nat
 
+ASSUME \A key \in (DOMAIN KEY_PART): key \in PART_KEY[KEY_PART[key]] 
+
 VARIABLES 
 \* Partition variables 
           db,         \* Function that represents Key-value database
@@ -26,10 +28,11 @@ VARIABLES
 \* Client-centric variables
           ops
 
+vars_view == <<db,inbox,c_status,time,read_keys,write_keys,state>>
 vars      == <<db,inbox,c_status,time,read_keys,write_keys,state,ops>>
 vars_snap == <<read_keys,write_keys>>
 
-CC == INSTANCE ClientCentric WITH Keys <- KEY, Values <- TX_ID \union {NOVAL}          
+CC == INSTANCE ClientCentric WITH Keys <- KEY, Values <-  VALUES         
     
 \* for instantiating the ClientCentric module
 wOp(k,v) == CC!w(k,v)
@@ -55,7 +58,7 @@ STATE_ENTRY == {"COMMITTED","PREPARED","ABORTED"}
 DB_ENTRY == [val:VALUES \union {NOVAL},state:STATE_ENTRY,timestamp:TIME,tx:TX_ID \union {NOVAL}]
 
 \* Possible states for a coordinator
-COORDINATOR_STATUS == {"INACTIVE","READ","WRITE","COMPLETE"}
+COORDINATOR_STATUS == {"INACTIVE","READ","WRITE"}
 
 
 \* State needed by a coordinator
@@ -110,11 +113,10 @@ Check_key_read(timestamp,key,entry) == /\ timestamp > entry.timestamp
 Init_part == 
         /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
         /\ inbox = [p \in PART |-> {}]
-        /\ \E p \in PART:
-            c_status = [t \in TX_ID |-> [status|->"INACTIVE",part|-> p,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]]
+        /\ c_status \in [TX_ID -> {[status|->"INACTIVE",part |-> p,time |-> START_TIMESTAMP,key_set |-> {},resp|-><<>>]:p \in PART}]
         /\ time = [p \in PART |-> START_TIMESTAMP]
 
-Read_snap(tx,ret) == /\ state[tx] = "WAIT_READ"
+Read_snap(tx,ret) == \*/\ state[tx] = "WAIT_READ"
                      /\ state' = [state EXCEPT ![tx] = IF write_keys[tx] # {} THEN "WRITE" ELSE "DONE"]
                      /\ ops' = ops \union {rOp(key,ret.ret[key]):key \in read_keys[tx]}
               
