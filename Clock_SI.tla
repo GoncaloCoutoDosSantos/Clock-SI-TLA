@@ -274,7 +274,7 @@ Commit_msg(p,msg,my_time) == LET
                         new_db == aux_db @@ db
                      IN
                         /\ msg.type = "Commit"
-                        /\ \A key \in msg.msg:\E n \in 1..Len(db[key]):db[key][n].state = "PREPARED" \* If it fails something is wrong
+                        /\ \A key \in msg.msg:\E n \in 1..Len(db[key]):db[key][n].state = "PREPARED" /\ db[key][n].tx = msg.id\* Ensures that already as receive the prepared and the acquired the lock
                         /\ db' = new_db
                         /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                         /\ UNCHANGED <<c_status,state,ops>>
@@ -287,7 +287,7 @@ Abort_msg(p,msg,my_time) == LET
                         aux_db == [key \in msg.msg |-> [n \in 1..Len(db[key]) |-> update_entry(db[key][n])]]
                     IN
                     /\ msg.type = "Abort"
-                    /\ \A key \in msg.msg:\E n \in 1..Len(db[key]): db[key][n].state = "PREPARED"
+                    /\ \A key \in msg.msg:\E n \in 1..Len(db[key]): db[key][n].state = "PREPARED" /\ db[key][n].tx = msg.id
                     /\ db' = aux_db @@ db 
                     /\ inbox' = [inbox EXCEPT ![p] = inbox[p] \ {msg}]
                     /\ UNCHANGED <<c_status,state,ops>>
@@ -362,11 +362,31 @@ Type_OK == /\ state \in [TX_ID -> {"READ","WAIT_READ","WRITE","WAIT_WRITE","DONE
 
 SnapshotIsolation == (\A tx \in TX_ID: state[tx] = "DONE") => CC!SnapshotIsolation(InitialState, ops)
 
+\* Ensures that eventually all transactions end 
 All_finish == <> (\A tx \in TX_ID:state[tx] = "DONE")
 
-All_entry == <> [](\A key \in KEY: \A entry \in (DOMAIN db[key]): db[key][entry].state # "PREPARED")
+\* No prepares when it ends
+No_prepare == \A key \in KEY:\A n \in (DOMAIN db[key]): db[key][n] # "PREPARED"
 
+\* Ensures that all writes have a entry
+All_entry == \A tx \in TX_ID: \A key \in write_keys[tx]: \E n \in (DOMAIN db[key]): db[key][n].tx = tx /\ db[key][n].state # "PREPARED"
+
+\* Ensures that if one write aborts then all writes of this transaction must abort either
+All_abort == \A key \in KEY: \E n \in (DOMAIN db[key]): 
+            (db[key][n].state = "ABORTED" => \A k \in write_keys[db[key][n].tx]:\E n1 \in (DOMAIN db[k]): db[k][n1].state = "ABORTED" /\ db[k][n1].tx = db[key][n].tx)
+
+\* Ensures that if one write commits then all writes of this transaction must commit either
+All_commit == \A key \in KEY: \E n \in (DOMAIN db[key]): 
+               (db[key][n].state = "COMMITTED" => \A k \in write_keys[db[key][n].tx]:\E n1 \in (DOMAIN db[k]): db[k][n1].state = "COMMITTED" /\ db[k][n1].tx = db[key][n].tx)
+
+Final_validation == (\A tx \in TX_ID:state[tx] = "DONE") => (All_commit /\ 
+                                                             All_abort /\ 
+                                                             All_entry /\ 
+                                                             No_prepare)
+
+Only_prepare == [](\A key \in KEY:\E n \in (DOMAIN db[key]): (db[key][n].state = "PREPARED" => \A n1 \in (DOMAIN db[key]): n1 = n \/ db[key][n1].state # "PREPARED"))
 ================================
+
 
 
 
