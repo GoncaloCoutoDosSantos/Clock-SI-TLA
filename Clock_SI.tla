@@ -8,7 +8,8 @@ CONSTANTS KEY,       \* Set of all keys
           TX_ID,     \* transactions ID's
           TIME_DIST ,\* Max update to time 
           KEY_PART,  \* Function that maps a key to a partition
-          PART_KEY   \* Function that maps a partition to a key
+          PART_KEY,  \* Function that maps a partition to a key
+          MAX_TIME   \* Max time value
 
 ASSUME \A key \in (DOMAIN KEY_PART): key \in PART_KEY[KEY_PART[key]] 
 
@@ -303,9 +304,9 @@ Only_prepare == [](\A key \in KEY:\E n \in (DOMAIN db[key]): (db[key][n].state =
 
 All_ops_in_db == \A op \in ops: \E n \in (DOMAIN db[op.key]): 
                                 db[op.key][n].val = op.value /\ db[op.key][n].status # "ABORT" 
-\* INVARIANT ----------------------------------------------------------------------
+\* CONSTRAINTS ----------------------------------------------------------------------
 
-Max_time == \A p \in PART: Get_time(p) <= 20
+Max_time == \A p \in PART: Get_time(p) <= MAX_TIME
 
 ================================
 
