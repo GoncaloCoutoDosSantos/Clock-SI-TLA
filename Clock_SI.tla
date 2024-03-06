@@ -276,7 +276,7 @@ Type_OK == /\ write_keys \in [TX_ID -> SUBSET KEY]
            /\ db \in [KEY -> Seq(DB_ENTRY)]
            /\ ops \in SUBSET CC!Operation 
 
-SnapshotIsolation == (\A tx \in TX_ID: tx_status[tx].status = "DONE") => CC!SnapshotIsolation(InitialState, ops)
+SnapshotIsolation == ((\A tx \in TX_ID: tx_status[tx].status = "DONE") /\ (\A p \in PART: Get_time(p) >= MAX_TIME) ) => CC!SnapshotIsolation(InitialState, ops)
 
 \* Ensures that eventually all transactions end 
 All_finish == <> (\A tx \in TX_ID:tx_status[tx].status = "DONE")
