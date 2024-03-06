@@ -229,7 +229,7 @@ Abort(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].key_set}:
                         new_db == (preped_db @@ orthers_db) @@ db
 
                         new_key_set == tx_status[tx].key_set \ keys
-                        new_status == IF new_key_set = {} THEN "DONE" ELSE "COMMIT"
+                        new_status == IF new_key_set = {} THEN "DONE" ELSE "ABORT"
                     IN
                     /\ tx_status[tx].status = "ABORT"
                     /\ db' = new_db
