@@ -19,6 +19,7 @@ VARIABLES
           db,             \* Function that represents Key-value database
           tx_status,      \* Function that maps a coordinator of a transaction to is status 
           partition_time, \* Simulation of real time 
+          diff_time,
 \* Snapshot variables 
 
           read_keys,      \* Function that maps a transaction to a set of keys to read 
@@ -26,9 +27,9 @@ VARIABLES
 \* Client-centric variables
           ops
 
-vars_view == <<db,tx_status,partition_time,read_keys,write_keys>>
-vars      == <<db,tx_status,partition_time,read_keys,write_keys,ops>>
-vars_snap == <<read_keys,write_keys,partition_time>>
+vars_view == <<db,tx_status,diff_time,read_keys,write_keys>>
+vars      == <<db,tx_status,partition_time,diff_time,read_keys,write_keys,ops>>
+vars_snap == <<read_keys,write_keys,partition_time,diff_time>>
 
 CC == INSTANCE ClientCentric WITH Keys <- KEY, Values <-  VALUES         
     
@@ -81,6 +82,7 @@ Update_time == \E p \in PART:
                         new_time == [partition_time EXCEPT ![p] = partition_time[p] + 1]
                     IN
                         /\ \A p1 \in PART:Abs(new_time[p] - new_time[p1]) <= TIME_DIST
+                        /\ \E min_p \in PART: (\A p1 \in PART: new_time[min_p] <= new_time[p1]) /\ diff_time' = [p1 \in PART |-> new_time[p1] - new_time[min_p]] 
                         /\ partition_time' = new_time
                         /\ ~(\A tx \in TX_ID: tx_status[tx].status = "DONE") 
                         /\ UNCHANGED <<db,tx_status,read_keys,write_keys,ops>>
@@ -266,6 +268,7 @@ Init ==
         /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
         /\ tx_status = [tx \in TX_ID |-> [status|->IF read_keys[tx] = {} THEN "WRITE" ELSE "READ",time |-> NOVAL,key_set |-> IF read_keys[tx] = {} THEN write_keys[tx] ELSE read_keys[tx],resp|-><<>>]]
         /\ partition_time = [p \in PART |-> START_TIMESTAMP]
+        /\ diff_time = [p \in PART |-> 0]
         /\ ops = {}
 
 Next == Next_action \/ Terminating \/ Update_time
