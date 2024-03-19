@@ -5,13 +5,13 @@ CONSTANTS k1,k2
 
 CONSTANTS p1,p2
 
-CONSTANTS  t1,t2,t3
+CONSTANTS  t1,t2
 
 C_KEY == {k1,k2}
 
 C_PART == {p1,p2}
 
-C_TX_ID == {t1,t2,t3}
+C_TX_ID == {t1,t2}
 
 C_VALUE == TX_ID \union {NOVAL}
 

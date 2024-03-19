@@ -92,7 +92,6 @@ Update_time == \E p \in PART:
 Check_key_write(timestamp,tx,key) == \A n \in (DOMAIN db[key]):
                                       \/ (db[key][n].state = "COMMITTED" /\ db[key][n].timestamp < timestamp) 
                                       \/ (db[key][n].state = "ABORTED" /\ db[key][n].tx # tx)
-                                      \/ (db[key][n].state # "PREPARED") 
 
 \* Checks if the entry choosen has a valid timestamp and if it is committed
 \* then compares to all orther entrys to verify it is the latest entry available to that timestamp
@@ -109,10 +108,10 @@ Check_key_read(timestamp,key,entry) == /\ timestamp > entry.timestamp
 \* Auxiliar predicates to change the variable ops 
 
 Read_ops(tx,ret) == 
-                     /\ ops' = ops \union {SetToSeq({rOp(key,ret[key]):key \in read_keys[tx]})}
+                     /\ ops' = [ops EXCEPT ![tx] = ops[tx] \o SetToSeq({rOp(key,ret[key]):key \in read_keys[tx]})]
               
 Write_ops_success(tx) == 
-                    /\ ops' = ops \union {SetToSeq({wOp(key,tx):key \in write_keys[tx]})}
+                    /\ ops' = [ops EXCEPT ![tx] = ops[tx] \o SetToSeq({wOp(key,tx):key \in write_keys[tx]})]
 
 Write_ops_abort(tx) == 
                     /\ ops' = ops
@@ -146,9 +145,9 @@ Read(tx) == \E key \in tx_status[tx].key_set:
                 /\ tx_status' = [tx_status EXCEPT ![tx] = [key_set |-> new_key_set,resp |-> new_resp(n),time |-> s_time] @@ tx_status[tx]]
                 /\ ops' = ops
         IN
-            /\ s_time >= Get_time(p) \* Eunsures that the start timestamp isn't in the future
+            /\ s_time <= Get_time(p) \* Eunsures that the start timestamp isn't in the future
             /\ tx_status[tx].status = "READ" 
-            /\ ~(\E n \in (DOMAIN db[key]): db[key][n].state = "PREPARED" /\ db[key][n].timestamp < s_time) \* ensures that it waits by a possible most recent read
+            \*/\ ~(\E n \in (DOMAIN db[key]): db[key][n].state = "PREPARED" /\ db[key][n].timestamp < s_time) \* ensures that it waits by a possible most recent read
             /\ \E n \in (DOMAIN db[key]):
                  Check_key_read(s_time,key,db[key][n]) /\
                  IF tx_status[tx].key_set = {key} THEN finish_read(n) ELSE normal_read(n)
@@ -176,7 +175,7 @@ Write(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].key_set}:
              /\ tx_status' = [tx_status EXCEPT ![tx] = [status|->"COMMIT",time |-> t,key_set |-> write_keys[tx],resp|-> <<>>] @@ tx_status[tx]]
              /\ Write_ops(tx,"OK")
       IN
-         /\ s_time >= Get_time(p) \* Eunsures that the start timestamp isn't in the future
+         /\ s_time <= Get_time(p) \* Eunsures that the start timestamp isn't in the future
          /\ tx_status[tx].status = "WRITE"
          /\ \A key \in keys: Check_key_write(s_time,tx,key)
          /\ IF tx_status[tx].key_set = keys THEN finish_write ELSE normal_write
@@ -195,7 +194,7 @@ Abort_write(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].key_set}:
                         my_time == Get_time(p)
 
                       IN 
-                        /\ s_time >= Get_time(p) 
+                        /\ s_time <= Get_time(p) 
                         /\ tx_status[tx].status = "WRITE"
                         /\ ~(\A key \in keys: Check_key_write(my_time,tx,key))
                         /\ db' = [key \in keys |-> Append(db[key],[val|->tx,timestamp|->my_time,state|->"ABORTED",tx |-> tx])] @@ db
@@ -266,12 +265,11 @@ Init ==
         /\ db = [k \in KEY |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |->NOVAL]>>]
         /\ tx_status = [tx \in TX_ID |-> [status|->IF read_keys[tx] = {} THEN "WRITE" ELSE "READ",time |-> NOVAL,key_set |-> IF read_keys[tx] = {} THEN write_keys[tx] ELSE read_keys[tx],resp|-><<>>]]
         /\ partition_time = [p \in PART |-> START_TIMESTAMP]
-        /\ ops = {}
+        /\ ops = [tx \in TX_ID |-> <<>>]
 
 Next == Next_action \/ Terminating \/ Update_time
 
-Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
-
+Spec == Init /\ [][Next]_vars /\ WF_vars(Next) 
 
 \*PROPERTYS ---------------------------------------------------------------------- 
 
@@ -284,10 +282,20 @@ Type_OK == /\ write_keys \in [TX_ID -> SUBSET KEY]
            /\ db \in [KEY -> Seq(DB_ENTRY)]
            /\ ops \in SUBSET CC!Transaction 
 
-SnapshotIsolation == ((\A tx \in TX_ID: tx_status[tx].status = "DONE")) => CC!SnapshotIsolation(InitialState, ops)
+SnapshotIsolation == ((\A tx \in TX_ID: tx_status[tx].status = "DONE")) => CC!SnapshotIsolation(InitialState, Range(ops))
+
+Serializability == ((\A tx \in TX_ID: tx_status[tx].status = "DONE")) => CC!Serializability(InitialState, Range(ops))
 
 \* Ensures that eventually all transactions end 
 All_finish == <> (\A tx \in TX_ID:tx_status[tx].status = "DONE")
+
+Evolution == \A tx \in TX_ID: \/ tx_status[tx].status = "READ" => tx_status'[tx].status \in {"READ","WRITE","DONE"}
+                              \/ tx_status[tx].status = "WRITE" => tx_status'[tx].status \in {"WRITE","COMMIT","ABORT"}
+                              \/ tx_status[tx].status = "COMMIT" => tx_status'[tx].status \in {"COMMIT","DONE"}
+                              \/ tx_status[tx].status = "ABORT" => tx_status'[tx].status \in {"ABORT","DONE"}
+                              \/ tx_status[tx].status = "DONE" => tx_status'[tx].status \in {"DONE"}
+
+Correct_evolution == [][Evolution]_vars
 
 \* No prepares when it ends
 No_prepare == \A key \in KEY:\A n \in (DOMAIN db[key]): db[key][n] # "PREPARED"
