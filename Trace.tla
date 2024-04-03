@@ -1,5 +1,5 @@
 ---- MODULE Trace ----
-EXTENDS TLC,Integers,Sequences
+EXTENDS TLC,FiniteSets,Sequences,Integers,Util
 
 CONSTANTS t1,t2
 
@@ -27,53 +27,15 @@ READ_KEYS == (t1 :> {k1} @@ t2 :> {k2})
 WRITE_KEYS == (t1 :> {k2} @@ t2 :> {k1})
 
 trace == <<
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>> @@ k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>>),
-      (t1 :> [status |-> "READ",time |-> NOVAL,key_set |-> READ_KEYS[t1],resp|-><<>>] @@ t2 :> [status |-> "READ",time |-> NOVAL,key_set |-> READ_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<>> @@ t2 :> <<>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>> @@ k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>>),
-      (t1 :> [status |-> "WRITE",time |-> 1,key_set |-> WRITE_KEYS[t1],resp|-><<>>] @@ t2 :> [status |-> "READ",time |-> NOVAL,key_set |-> READ_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL]>> @@ t2 :> <<>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>> @@ k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>>),
-      (t1 :> [status |-> "WRITE",time |-> 1,key_set |-> WRITE_KEYS[t1],resp|-><<>>] @@ t2 :> [status |-> "WRITE",time |-> 1,key_set |-> WRITE_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL]>> @@ t2 :> <<[key |-> k2, op |-> "read", value |-> NOVAL]>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>> @@ 
-       k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t1,state |-> "PREPARED",timestamp |-> 1,tx |-> t1]>>),
-      (t1 :> [status |-> "COMMIT",time |-> 1,key_set |-> WRITE_KEYS[t1],resp|-><<>>] @@ t2 :> [status |-> "WRITE",time |-> 1,key_set |-> WRITE_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL],[key |-> k2, op |-> "write", value |-> t1]>> @@ t2 :> <<[key |-> k2, op |-> "read", value |-> NOVAL]>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>> @@ 
-       k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t1,state |-> "COMMITTED",timestamp |-> 1,tx |-> t1]>>),
-      (t1 :> [status |-> "DONE",time |-> 1,key_set |-> {},resp|-><<>>] @@ t2 :> [status |-> "WRITE",time |-> 1,key_set |-> WRITE_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL],[key |-> k2, op |-> "write", value |-> t1]>> @@ t2 :> <<[key |-> k2, op |-> "read", value |-> NOVAL]>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t2,state |-> "PREPARED",timestamp |-> 1, tx |-> t2]>> @@ 
-       k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t1,state |-> "COMMITTED",timestamp |-> 1,tx |-> t1]>>),
-      (t1 :> [status |-> "DONE",time |-> 1,key_set |-> {},resp|-><<>>] @@ t2 :> [status |-> "COMMIT",time |-> 1,key_set |-> WRITE_KEYS[t2],resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL],[key |-> k2, op |-> "write", value |-> t1]>> @@ 
-       t2 :> <<[key |-> k2, op |-> "read", value |-> NOVAL],[key |-> k1, op |-> "write", value |-> t2]>>)>>,
-
-    <<(k1 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t2,state |-> "COMMITTED",timestamp |-> 1,tx |-> t2]>> @@ 
-       k2 :> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL],
-               [val |-> t1,state |-> "COMMITTED",timestamp |-> 1, tx |-> t1]>>),
-      (t1 :> [status |-> "DONE",time |-> 1,key_set |-> {},resp|-><<>>] @@ t2 :> [status |-> "DONE",time |-> 1,key_set |-> {},resp|-><<>>]),
-      (p1 :> 1 @@ p2 :> 1),
-      (t1 :> <<[key |-> k1, op |-> "read", value |-> NOVAL],[key |-> k2, op |-> "write", value |-> t1]>> @@ 
-       t2 :> <<[key |-> k2, op |-> "read", value |-> NOVAL],[key |-> k1, op |-> "write", value |-> t2]>>)>>
+    [op |-> "read"  , key |->  k1 , value |-> NOVAL, tx |-> t1, time |-> 1],
+    [op |-> "read"  , key |->  k2 , value |-> NOVAL, tx |-> t2, time |-> 1],
+    [op |-> "write" , key |-> {k2}, value |-> t1   , tx |-> t1, time |-> 1],
+    [op |-> "commit", key |-> {k2}, value |-> t1   , tx |-> t1, time |-> 1],
+    [op |-> "write" , key |-> {k1}, value |-> t2   , tx |-> t2, time |-> 1],
+    [op |-> "commit", key |-> {k1}, value |-> t2   , tx |-> t2, time |-> 1]
 >>
+
+log == [trace |-> trace, read_keys |-> (t1 :> {k1} @@ t2 :> {k2}), write_keys |-> (t1 :> {k2} @@ t2 :> {k1})]
 
 KEY == {k1,k2}
 
@@ -93,29 +55,90 @@ MAX_TIME == 10
 
 Model == INSTANCE Clock_SI
 
-Read == LET
-            rec == trace[1]
-        IN
-            /\ db = rec[1]
-            /\ tx_status = rec[2]
-            /\ partition_time = rec[3]
-            /\ read_keys = READ_KEYS 
-            /\ write_keys = WRITE_KEYS
-            /\ ops = rec[4]
+\* Tranforms a set to a unique sequence 
+SetToSeq(s) == CHOOSE f \in [1..Cardinality(s) -> s] : IsInjective(f) 
+
+Max(x,y) == IF x > y THEN x ELSE y
+
+Initial_state_db(set_keys) == 
+    [key \in set_keys |-> <<[val |-> NOVAL,state |-> "COMMITTED",timestamp |-> 0,tx |-> NOVAL]>>]
+
+Initial_tx_status(set_tx,read_key,write_key) == 
+    [tx \in set_tx |-> [status |-> "RUNNING",
+                        start_timestamp |-> NOVAL,
+                        commit_timestamp |-> NOVAL,
+                        read_set |-> read_key[tx],
+                        write_set |-> write_key[tx],
+                        commit_set |-> write_key[tx]]]
+
+Read_init == 
+    /\ db = Initial_state_db(KEY)
+    /\ tx_status = Initial_tx_status(TX_ID,log.read_keys,log.write_keys)
+    /\ partition_time = [p \in PART |-> 1]
+    /\ read_keys = log.read_keys
+    /\ write_keys = log.write_keys
+    /\ ops = [tx \in TX_ID |-> <<>>]
+
+Read_read(rec) ==
+    LET
+        start_timestamp == IF tx_status[rec.tx].start_timestamp = NOVAL
+                           THEN rec.time
+                           ELSE tx_status[rec.tx].start_timestamp
+        new_read_set == tx_status[rec.tx].read_set \ {rec.key}
+    IN
+        /\ rec.op = "read"
+        /\ ops' = [ops EXCEPT ![rec.tx] = Append(ops[rec.tx],[op |-> "read",key |-> rec.key,value |-> rec.value,time |-> NOVAL])]
+        /\ tx_status' = [tx_status EXCEPT ![rec.tx] = [start_timestamp |-> start_timestamp,read_set |-> new_read_set] @@ tx_status[rec.tx]]
+        /\ UNCHANGED <<db,partition_time,read_keys,write_keys>>
+
+Read_write(rec) == 
+    LET 
+        new_db == [key \in rec.key |-> Append(db[key],[val |-> rec.value,state |-> "PREPARED",timestamp |-> rec.time,tx |-> rec.tx])]
+        
+        start_timestamp == IF tx_status[rec.tx].start_timestamp = NOVAL
+                           THEN rec.time
+                           ELSE tx_status[rec.tx].start_timestamp
+        commit_timestamp == IF tx_status[rec.tx].commit_timestamp = NOVAL
+                            THEN rec.time 
+                            ELSE Max(tx_status[rec.tx].commit_timestamp, rec.time)
+        new_write_set == tx_status[rec.tx].write_set \ rec.key
+    IN
+        /\ rec.op = "write"
+        /\ ops' = [ops EXCEPT ![rec.tx] = ops[rec.tx] \o SetToSeq({[op |-> "write",key |-> key,value |-> rec.value,time |-> rec.time]: key \in rec.key})]
+        /\ tx_status' = [tx_status EXCEPT ![rec.tx] = [start_timestamp |-> start_timestamp,
+                                                       commit_timestamp |-> commit_timestamp,
+                                                       write_set |-> new_write_set] @@ tx_status[rec.tx]]
+        /\ db' = new_db @@ db
+        /\ UNCHANGED <<partition_time,read_keys,write_keys>>
+
+Read_commit(rec) == 
+    LET 
+        commit_timestamp == tx_status[rec.tx].commit_timestamp
+
+        update_entry(entry) == 
+            IF entry.state = "PREPARED" /\ entry.tx = rec.tx 
+            THEN [state |-> "COMMITTED",timestamp |-> commit_timestamp] @@ entry 
+            ELSE entry
+
+        new_db == [key \in rec.key |-> [n \in (DOMAIN db[key]) |-> update_entry(db[key][n])]]
+    IN
+        /\ rec.op = "commit"
+        /\ tx_status' = [tx_status EXCEPT ![rec.tx] = [commit_set |-> tx_status[rec.tx].commit_set \ rec.key] @@ tx_status[rec.tx]]
+        /\ db' = new_db @@ db
+        /\ UNCHANGED <<ops,partition_time,read_keys,write_keys>>
 
 Read_next == LET
-                rec == trace[ind]
+                rec == log.trace[ind]
             IN
-                /\ db' = rec[1]
-                /\ tx_status' = rec[2]
-                /\ partition_time' = rec[3]
-                /\ read_keys' = read_keys
-                /\ write_keys' = write_keys
-                /\ ops' = rec[4]
+                \/ Read_read(rec)
+                \/ Read_write(rec)
+                \/ Read_commit(rec)
 
-Init == ind = 2 /\ Read
+Terminating == ind >= Len(log.trace) /\ UNCHANGED vars
 
-Next == ind <= Len(trace) /\ ind' = ind + 1 /\ Read_next
+Init == ind = 1 /\ Read_init
+
+Next == (ind <= Len(log.trace) /\ ind' = ind + 1 /\ Read_next) \/ Terminating
 
 Trace_behaviour == Init /\ [][Next]_vars /\ WF_vars(Next)
 
