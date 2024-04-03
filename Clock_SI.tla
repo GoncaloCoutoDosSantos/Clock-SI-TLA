@@ -1,4 +1,4 @@
----- MODULE Clock_SI_new ----
+---- MODULE Clock_SI ----
 EXTENDS TLC,FiniteSets,Sequences,Integers,Util
 CONSTANTS KEY,       \* Set of all keys
           VALUES,    \* Set of all values
