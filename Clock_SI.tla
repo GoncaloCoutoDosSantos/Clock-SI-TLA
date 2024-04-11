@@ -3,7 +3,7 @@ EXTENDS TLC,FiniteSets,Sequences,Integers,Util
 CONSTANTS KEY,       \* Set of all keys
           VALUES,    \* Set of all values
           NOVAL,     \* the value null 
-          PART,      \* Number of partitons
+          PART,      \* Ids of partitons
           TX_ID,     \* transactions ID's
           TIME_DIST ,\* Max update to time 
           KEY_PART,  \* Function that maps a key to a partition
@@ -26,7 +26,6 @@ VARIABLES
 \* Client-centric variables
           ops
 
-vars_view == <<db,tx_status,partition_time,read_keys,write_keys>>
 vars      == <<db,tx_status,partition_time,read_keys,write_keys,ops>>
 vars_snap == <<read_keys,write_keys,partition_time>>
 
@@ -38,6 +37,26 @@ rOp(k,v) == CC!r(k,v)
 InitialState == [k \in KEY |-> NOVAL]
 
 START_TIMESTAMP == 1
+
+tx_status_view ==
+    LET
+        time(tx) == IF tx_status[tx].commit_timestamp # NOVAL /\ tx_status[tx].write_set = {}
+                    THEN tx_status[tx].commit_timestamp
+                    ELSE tx_status[tx].start_timestamp
+    IN
+        [tx \in TX_ID |-> [status |-> tx_status[tx].status,
+                           time |-> time(tx),
+                           read_set |-> tx_status[tx].read_set,
+                           write_set |-> tx_status[tx].write_set,
+                           commit_set |-> tx_status[tx].commit_set]]
+
+partition_time_view ==
+    LET
+        min_p == CHOOSE x \in PART:(\A p \in PART: partition_time[x] <= partition_time[p])
+    IN
+        [p \in PART |-> partition_time[p] - partition_time[min_p]]
+
+vars_view == <<db,tx_status_view,partition_time_view,read_keys,write_keys>>
 
 \* Data types --------------------------------------------------------
 
@@ -77,7 +96,7 @@ TRANSACTION_ENTRY == [
     commit_set:SUBSET KEY,
     \* start_timestamp -> start timestamp of a transaction
     start_timestamp:TIME \union {NOVAL},
-    \* commit_timestamp -> start timestamp of a transaction
+    \* commit_timestamp -> commit timestamp of a transaction
     commit_timestamp: TIME \union {NOVAL}]
 
 \* Expantion upon the operation type defined in the Client-centric 
@@ -347,7 +366,10 @@ Evolution == \A tx \in TX_ID: \/ tx_status[tx].status = "NORMAL" => tx_status'[t
                               \/ tx_status[tx].status = "ABORT" => tx_status'[tx].status \in {"ABORT","DONE"}
                               \/ tx_status[tx].status = "DONE" => tx_status'[tx].status \in {"DONE"}
 
-All_prepared == ~(\A k \in KEY: \E version \in DOMAIN db[k]: db[k][version].state = "ABORTED") 
+All_prepared == /\ (\A k \in KEY: \E version \in DOMAIN db[k]: db[k][version].state = "PREPARED") 
+                /\ (\A tx \in TX_ID: Cardinality(write_keys[tx]) = 2 /\ Cardinality(tx_status[tx].write_set) = 1 /\ Cardinality(read_keys[tx]) = 0)
+
+test_l ==  (All_prepared ~> [](~Finished))
 
 Correct_evolution == [][Evolution]_vars
 
