@@ -11,13 +11,15 @@ CONSTANTS KEY,       \* Set of all keys
           MAX_TIME   \* Max time value
 
 ASSUME \A key \in (DOMAIN KEY_PART): key \in PART_KEY[KEY_PART[key]] 
+ASSUME \A part \in PART: PART_KEY # {}
 
 ASSUME TIME_DIST > 0
+ASSUME MAX_TIME > 0
 
 VARIABLES 
 \* Partition variables 
           db,             \* Function that represents Key-value database
-          tx_status,      \* Function that maps a coordinator of a transaction to is status 
+          tx_status,      \* Function that maps a transaction to his status 
           partition_time, \* Simulation of real time 
 \* Snapshot variables 
 
@@ -56,7 +58,7 @@ partition_time_view ==
     IN
         [p \in PART |-> partition_time[p] - partition_time[min_p]]
 
-vars_view == <<db,tx_status_view,partition_time_view,read_keys,write_keys>>
+vars_view == <<db,tx_status,partition_time,read_keys,write_keys>>
 
 \* Data types --------------------------------------------------------
 
@@ -128,30 +130,53 @@ Update_time == \E p \in PART:
                         /\ partition_time' = new_time
                         /\ UNCHANGED <<db,tx_status,read_keys,write_keys,ops>>
 
+Get_start_timestamp(tx,p) == IF tx_status[tx].start_timestamp = NOVAL 
+                             THEN Get_time(p)
+                             ELSE tx_status[tx].start_timestamp
+
+\* Given a transaction tx and a set of keys it retrives
+\* it retrives a set of partition that have the clock greater
+\* or equal to the transaction's start_timestamp and are responsible 
+\* for that key
+Accessible_partitions(tx,set) == 
+    LET
+        partitions_set == {KEY_PART[k]:k \in set}
+    IN
+        IF tx_status[tx].start_timestamp = NOVAL
+        THEN partitions_set
+        ELSE {p \in partitions_set: tx_status[tx].start_timestamp <= Get_time(p)}
+
+\* Given a transaction tx and a set of keys it retrives
+\* it retrives a set of keys that are save in a partition that has the clock greater
+\* or equal to the transaction's start_timestamp
+Accessible_keys(tx,set) == 
+    {key \in set: KEY_PART[key] \in Accessible_partitions(tx,set)}
+
 \* Checks if there isn't a write-write conflict 
-\* if commited then the commit timestamp must be lower
-\* There can be any "PREPARED" version
+\* If a there is a version of this key commited then it must have been commited after th start timestamp
+\* It can be no prepared version for this key 
 Check_key_write(start_timestamp,tx,key) == 
     \A version \in (DOMAIN db[key]):
         /\ (db[key][version].state = "COMMITTED" => db[key][version].timestamp < start_timestamp)
         /\ (db[key][version].state # "PREPARED")
 
-\* Checks if there is a write-write conflict
+\* Checks if there is a write-write conflict for a transaction to abort
 \* it must exist a version "COMMITTED" with a higher commit timestamp
 Check_key_abort(start_timestamp,tx,key) ==
     \E version \in (DOMAIN db[key]): 
         /\ (db[key][version].state = "COMMITTED" /\ db[key][version].timestamp > start_timestamp)
 
-\* Checks if the entry choosen has a valid timestamp and if it is committed
-\* then compares to all orther entrys to verify it is the latest entry available to that timestamp
-\* It returns false if there is entry in committing state with greater timestamp that are valid choises
-Check_key_read(timestamp,key,entry) == 
-    /\ timestamp > entry.timestamp 
+\* Checks if the entry choosen is a valid entry to be read
+\* Starts by ensuring the transaction start_timesamp is greater then the entry commit timesamp
+\* Then ensures there isn t any entry for this key in the prepared state
+\* Then ensures that this entry is the entry with the greatest timesamp of all avilable entrys
+Check_key_read(start_timestamp,key,entry) == 
+    /\ start_timestamp > entry.timestamp 
     /\ entry.state = "COMMITTED" 
     /\ \A version \in (DOMAIN db[key]):
         /\ db[key][version].state # "PREPARED"
         /\ (entry # db[key][version] /\ 
-            db[key][version].timestamp < timestamp /\ 
+            db[key][version].timestamp < start_timestamp /\ 
             db[key][version].state # "ABORTED") => db[key][version].timestamp < entry.timestamp
 
 \*  -----------------------------------------------------------------------------------
@@ -164,8 +189,8 @@ Read_ops(tx,key,val) ==
 
 \* Adds entrys from write operations 
 Write_ops(tx,fun) == 
-    /\ ops' = [ops EXCEPT ![tx] =
-        ops[tx] \o SetToSeq({[op |-> "write",key |-> k, value |-> tx, time |-> fun[k]]:k \in (DOMAIN fun)})]  
+    LET set_entry == {[op |-> "write",key |-> k, value |-> tx, time |-> fun[k]]:k \in (DOMAIN fun)}
+    IN ops' = [ops EXCEPT ![tx] = ops[tx] \o SetToSeq(set_entry)]  
 
 \* In case of abort remove all write operations added
 Clean_ops(tx) == ops' = [ops EXCEPT ![tx] = SelectSeq(ops[tx],LAMBDA x: x.op = "read")]
@@ -183,132 +208,131 @@ Get_writed_keys_ops(tx) == LET
 
 \*---------------------------------------------------- 
 
-Read(tx) == \E key \in tx_status[tx].read_set:
-    LET 
-        p == KEY_PART[key]
-        start_timestamp == IF tx_status[tx].start_timestamp = NOVAL 
-                           THEN Get_time(p)
-                           ELSE tx_status[tx].start_timestamp
-        new_read_set == tx_status[tx].read_set \ {key}
+Read(tx) ==
+    /\ tx_status[tx].status = "RUNNING"
+    /\ tx_status[tx].read_set # {}
+    /\ \E key \in Accessible_keys(tx,tx_status[tx].read_set):
+        LET 
+            p == KEY_PART[key]
+            start_timestamp == Get_start_timestamp(tx,p)
+            new_read_set == tx_status[tx].read_set \ {key}
 
-    IN
-        \* Eunsures that the start timestamp isn't in the future
-        /\ start_timestamp <= Get_time(p) 
-        /\ tx_status[tx].status = "RUNNING" 
-        /\ tx_status[tx].read_set # {}
-        /\ \E n \in (DOMAIN db[key]):
-             /\ Check_key_read(start_timestamp,key,db[key][n])
-             /\ tx_status' = [tx_status EXCEPT ![tx] = [
-                                read_set |-> new_read_set,
-                                start_timestamp |-> start_timestamp] @@ tx_status[tx]]
-             /\ Read_ops(tx,key,db[key][n].val)
-        /\ UNCHANGED <<db>>
+        IN
+            \* Eunsures that the start timestamp isn't in the future
+            /\ start_timestamp <= Get_time(p) 
+            /\ \E n \in (DOMAIN db[key]):
+                 /\ Check_key_read(start_timestamp,key,db[key][n])
+                 /\ tx_status' = [tx_status EXCEPT ![tx] = [
+                                    read_set |-> new_read_set,
+                                    start_timestamp |-> start_timestamp] @@ tx_status[tx]]
+                 /\ Read_ops(tx,key,db[key][n].val)
+            /\ UNCHANGED <<db>>
 
+Write(tx) == 
+    /\ tx_status[tx].status = "RUNNING"
+    /\ tx_status[tx].read_set = {}
+    /\ tx_status[tx].write_set # {}
+    /\ \E p \in Accessible_partitions(tx,tx_status[tx].write_set):
+        LET
+            start_timestamp == Get_start_timestamp(tx,p)
+            keys == PART_KEY[p] \intersect tx_status[tx].write_set 
+            prepared_timestamp == Get_time(p)
+            write_times == [key \in keys |-> prepared_timestamp]
 
-Write(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].write_set}:
-    LET
-        start_timestamp == IF tx_status[tx].start_timestamp = NOVAL 
-                           THEN Get_time(p)
-                           ELSE tx_status[tx].start_timestamp
-        keys == PART_KEY[p] \intersect tx_status[tx].write_set 
-        prepared_timestamp == Get_time(p)
-        write_times == [key \in keys |-> prepared_timestamp]
+            timestamps_previous_writes == Get_time_ops(tx) \union {prepared_timestamp}
+            commit_timestamp == IF tx_status[tx].commit_timestamp = NOVAL
+                                THEN prepared_timestamp
+                                ELSE Max(tx_status[tx].commit_timestamp, prepared_timestamp)
+            new_write_set == tx_status[tx].write_set \ keys 
+            new_entry == [val|->tx,timestamp|->prepared_timestamp,state|->"PREPARED",tx|->tx]
 
-        timestamps_previous_writes == Get_time_ops(tx) \union {prepared_timestamp}
-        commit_timestamp == IF tx_status[tx].commit_timestamp = NOVAL
-                            THEN prepared_timestamp
-                            ELSE Max(tx_status[tx].commit_timestamp, prepared_timestamp)
-        new_write_set == tx_status[tx].write_set \ keys 
-        new_entry == [val|->tx,timestamp|->prepared_timestamp,state|->"PREPARED",tx|->tx]
-
-      IN
-         \* Ensures that the start timestamp isn't in the future
-         /\ start_timestamp <= Get_time(p) 
-         /\ tx_status[tx].status = "RUNNING"
-         /\ tx_status[tx].read_set = {}
-         /\ tx_status[tx].write_set # {}
-         /\ \A key \in keys: Check_key_write(start_timestamp,tx,key)
-         /\ tx_status' = [tx_status EXCEPT ![tx] = 
-                            [write_set |-> new_write_set,
-                             start_timestamp |-> start_timestamp,
-                             commit_timestamp |-> commit_timestamp] @@ tx_status[tx]]
-         /\ Write_ops(tx,write_times)
-         /\ db' = [key \in keys |-> Append(db[key],new_entry)] @@ db 
+          IN
+             \* Ensures that the start timestamp isn't in the future
+             /\ start_timestamp <= Get_time(p) 
+             /\ \A key \in keys: Check_key_write(start_timestamp,tx,key)
+             /\ tx_status' = [tx_status EXCEPT ![tx] = 
+                                [write_set |-> new_write_set,
+                                 start_timestamp |-> start_timestamp,
+                                 commit_timestamp |-> commit_timestamp] @@ tx_status[tx]]
+             /\ Write_ops(tx,write_times)
+             /\ db' = [key \in keys |-> Append(db[key],new_entry)] @@ db 
 
 
 
-Abort_write(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].write_set}:
-    LET
-        start_timestamp == IF tx_status[tx].start_timestamp = NOVAL 
-                           THEN Get_time(p)
-                           ELSE tx_status[tx].start_timestamp
-        keys == PART_KEY[p] \intersect tx_status[tx].write_set 
-        keys_to_abort == write_keys[tx] \ keys
-        abort_time == Get_time(p)
-        abort_entry == [val|->tx,timestamp|->abort_time,state|->"ABORTED",tx |-> tx]
+Abort_write(tx) ==
+    /\ tx_status[tx].status = "RUNNING"
+    /\ tx_status[tx].read_set = {}
+    /\ tx_status[tx].write_set # {}
+    /\ \E p \in Accessible_partitions(tx,tx_status[tx].write_set):
+        LET
+            start_timestamp == Get_start_timestamp(tx,p)
+            keys == PART_KEY[p] \intersect tx_status[tx].write_set 
+            keys_to_abort == write_keys[tx] \ keys
+            abort_time == Get_time(p)
+            abort_entry == [val|->tx,timestamp|->abort_time,state|->"ABORTED",tx |-> tx]
 
-    IN 
-        /\ start_timestamp <= Get_time(p) 
-        /\ tx_status[tx].status = "RUNNING"
-        /\ tx_status[tx].read_set = {}
-        /\ tx_status[tx].write_set # {}
-        /\ \E key \in keys: Check_key_abort(start_timestamp,tx,key)
-        /\ db' = [key \in keys |-> Append(db[key],abort_entry)] @@ db
-        /\ Clean_ops(tx)
-        /\ tx_status' = [tx_status EXCEPT ![tx] = 
-                            [status|-> "ABORTING",
-                             start_timestamp |-> start_timestamp,
-                             commit_timestamp |-> abort_time,
-                             commit_set |-> keys_to_abort] @@ tx_status[tx]]
-
-
-Commit(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].commit_set}:
-    LET
-        keys == PART_KEY[p] \intersect tx_status[tx].commit_set
-        commit_timestamp == tx_status[tx].commit_timestamp
-
-        update_entry(entry) == 
-            IF entry.state = "PREPARED" /\ entry.tx = tx 
-            THEN [state |-> "COMMITTED",timestamp |-> commit_timestamp] @@ entry 
-            ELSE entry
-
-        aux_db == [key \in keys |-> [n \in (DOMAIN db[key]) |-> update_entry(db[key][n])]]
-        new_db == aux_db @@ db
-
-        new_commit_set == tx_status[tx].commit_set \ keys
-    IN
-        /\ tx_status[tx].status = "RUNNING" 
-        /\ tx_status[tx].read_set = {}
-        /\ tx_status[tx].write_set = {}
-        /\ tx_status[tx].commit_set # {}
-        /\ db' = new_db
-        /\ tx_status' = [tx_status EXCEPT ![tx] = [commit_set |-> new_commit_set] @@ tx_status[tx]]
-        /\ UNCHANGED <<ops>>
+        IN 
+            /\ start_timestamp <= Get_time(p) 
+            /\ \E key \in keys: Check_key_abort(start_timestamp,tx,key)
+            /\ db' = [key \in keys |-> Append(db[key],abort_entry)] @@ db
+            /\ Clean_ops(tx)
+            /\ tx_status' = [tx_status EXCEPT ![tx] = 
+                                [status|-> "ABORTING",
+                                 start_timestamp |-> start_timestamp,
+                                 commit_timestamp |-> abort_time,
+                                 commit_set |-> keys_to_abort] @@ tx_status[tx]]
 
 
-Abort(tx) == \E p \in {KEY_PART[k]:k \in tx_status[tx].commit_set}:
-    LET
-        abort_time == tx_status[tx].commit_timestamp
-        keys == PART_KEY[p] \intersect tx_status[tx].commit_set
-        preped_keys == {key \in keys: \E n \in (DOMAIN db[key]): 
-                            /\ db[key][n].state = "PREPARED" 
-                            /\ db[key][n].tx = tx}
-        
-        update_entry(entry) == IF entry.state = "PREPARED" 
-                               THEN [state |-> "ABORTED",timestamp |-> abort_time] @@ entry 
-                               ELSE entry
+Commit(tx) ==
+    /\ tx_status[tx].status = "RUNNING"
+    /\ tx_status[tx].read_set = {}
+    /\ tx_status[tx].write_set = {}
+    /\ tx_status[tx].commit_set # {}
+    /\ \E p \in {KEY_PART[k]:k \in tx_status[tx].commit_set}:
+        LET
+            keys == PART_KEY[p] \intersect tx_status[tx].commit_set
+            commit_timestamp == tx_status[tx].commit_timestamp
 
-        abort_entry == [val|->tx,timestamp|-> abort_time,state|->"ABORTED",tx |-> tx]
-        preped_db == [key \in preped_keys |-> [n \in (DOMAIN db[key]) |-> update_entry(db[key][n])]]
-        orthers_db == [key \in (keys \ preped_keys) |-> Append(db[key],abort_entry)]
-        new_db == (preped_db @@ orthers_db) @@ db
+            update_entry(entry) == 
+                IF entry.state = "PREPARED" /\ entry.tx = tx 
+                THEN [state |-> "COMMITTED",timestamp |-> commit_timestamp] @@ entry 
+                ELSE entry
 
-        new_commit_set == tx_status[tx].commit_set \ keys
-    IN
-        /\ tx_status[tx].status = "ABORTING"
-        /\ db' = new_db
-        /\ tx_status' = [tx_status EXCEPT ![tx] = [commit_set |-> new_commit_set] @@ tx_status[tx]]
-        /\ UNCHANGED <<ops>>
+            aux_db == [key \in keys |-> [n \in (DOMAIN db[key]) |-> update_entry(db[key][n])]]
+            new_db == aux_db @@ db
+
+            new_commit_set == tx_status[tx].commit_set \ keys
+        IN
+            /\ db' = new_db
+            /\ tx_status' = [tx_status EXCEPT ![tx] = [commit_set |-> new_commit_set] @@ tx_status[tx]]
+            /\ UNCHANGED <<ops>>
+
+
+Abort(tx) ==
+    /\ tx_status[tx].status = "ABORTING"
+    /\ tx_status[tx].commit_set # {}
+    /\ \E p \in {KEY_PART[k]:k \in tx_status[tx].commit_set}:
+        LET
+            abort_time == tx_status[tx].commit_timestamp
+            keys == PART_KEY[p] \intersect tx_status[tx].commit_set
+            preped_keys == {key \in keys: \E n \in (DOMAIN db[key]): 
+                                /\ db[key][n].state = "PREPARED" 
+                                /\ db[key][n].tx = tx}
+            
+            update_entry(entry) == IF entry.state = "PREPARED" 
+                                   THEN [state |-> "ABORTED",timestamp |-> abort_time] @@ entry 
+                                   ELSE entry
+
+            abort_entry == [val|->tx,timestamp|-> abort_time,state|->"ABORTED",tx |-> tx]
+            preped_db == [key \in preped_keys |-> [n \in (DOMAIN db[key]) |-> update_entry(db[key][n])]]
+            orthers_db == [key \in (keys \ preped_keys) |-> Append(db[key],abort_entry)]
+            new_db == (preped_db @@ orthers_db) @@ db
+
+            new_commit_set == tx_status[tx].commit_set \ keys
+        IN
+            /\ db' = new_db
+            /\ tx_status' = [tx_status EXCEPT ![tx] = [commit_set |-> new_commit_set] @@ tx_status[tx]]
+            /\ UNCHANGED <<ops>>
 
 \*------------------------------------------------------------------------
 
@@ -320,7 +344,7 @@ Next_action == /\ UNCHANGED vars_snap
                    \/ Write(tx)
                    \/ Read(tx)))  
             
-Terminating == Finished /\ UNCHANGED vars
+End_stutter == Finished /\ UNCHANGED vars
 
 \*---------------------------------------------------------------------------------
 
@@ -338,7 +362,7 @@ Init ==
         /\ partition_time = [p \in PART |-> START_TIMESTAMP]
         /\ ops = [tx \in TX_ID |-> <<>>] 
 
-Next == (~Finished /\ (Next_action \/ Update_time)) \/ Terminating
+Next == (~Finished /\ (Next_action \/ Update_time)) \/ End_stutter
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next) 
 
