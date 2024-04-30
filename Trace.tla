@@ -26,7 +26,7 @@ READ_KEYS == (t1 :> {k1} @@ t2 :> {k2})
 
 WRITE_KEYS == (t1 :> {k2} @@ t2 :> {k1})
 
-trace == <<
+trace_write_skew == <<
     [op |-> "read"  , key |->  k1 , value |-> NOVAL, tx |-> t1, time |-> 1],
     [op |-> "read"  , key |->  k2 , value |-> NOVAL, tx |-> t2, time |-> 1],
     [op |-> "write" , key |-> {k2}, value |-> t1   , tx |-> t1, time |-> 1],
@@ -35,7 +35,35 @@ trace == <<
     [op |-> "commit", key |-> {k1}, value |-> t2   , tx |-> t2, time |-> 1]
 >>
 
-log == [trace |-> trace, read_keys |-> (t1 :> {k1} @@ t2 :> {k2}), write_keys |-> (t1 :> {k2} @@ t2 :> {k1})]
+log_write_skew == [trace |-> trace_write_skew, read_keys |-> (t1 :> {k1} @@ t2 :> {k2}), write_keys |-> (t1 :> {k2} @@ t2 :> {k1})]
+
+trace_read_skew == <<
+    [op |-> "read"  , key |->  k1 , value |-> NOVAL, tx |-> t1, time |-> 1],
+    [op |-> "write" , key |-> {k1}, value |-> t2   , tx |-> t2, time |-> 1],
+    [op |-> "write" , key |-> {k2}, value |-> t2   , tx |-> t2, time |-> 1],
+    [op |-> "commit", key |-> {k1}, value |-> t2   , tx |-> t2, time |-> 1],
+    [op |-> "commit", key |-> {k2}, value |-> t2   , tx |-> t2, time |-> 1],
+    [op |-> "read"  , key |->  k2 , value |-> t2   , tx |-> t1, time |-> 1]
+>>
+
+log_read_skew == [trace |-> trace_read_skew, read_keys |-> (t1 :> {k1,k2} @@ t2 :> {}), write_keys |-> (t1 :> {} @@ t2 :> {k1,k2})]
+
+trace_dirty_write == <<
+    [op |-> "write" , key |-> {k1}, value |-> t1, tx |-> t1, time |-> 1],
+    [op |-> "write" , key |-> {k1}, value |-> t2, tx |-> t2, time |-> 1],
+    [op |-> "commit", key |-> {k1}, value |-> t2, tx |-> t2, time |-> 1],
+    [op |-> "commit" , key |-> {k1}, value |-> t1, tx |-> t1, time |-> 1]
+>>
+
+log_dirty_write == [trace |-> trace_dirty_write, read_keys |-> (t1 :> {} @@ t2 :> {}), write_keys |-> (t1 :> {k1} @@ t2 :> {k1})]
+
+trace_dirty_read == <<
+    [op |-> "write" , key |-> {k1}, value |-> t1, tx |-> t1, time |-> 1],
+    [op |-> "read"  , key |-> {k1}, value |-> t1, tx |-> t2, time |-> 1],
+    [op |-> "commit", key |-> {k1}, value |-> t1, tx |-> t1, time |-> 1]
+>>
+
+log_dirty_read == [trace |-> trace_dirty_read, read_keys |-> (t1 :> {} @@ t2 :> {k1}), write_keys |-> (t1 :> {k1} @@ t2 :> {})]
 
 KEY == {k1,k2}
 
@@ -71,7 +99,7 @@ Initial_tx_status(set_tx,read_key,write_key) ==
                         write_set |-> write_key[tx],
                         commit_set |-> write_key[tx]]]
 
-Read_init == 
+Read_init(log) == 
     /\ db = Initial_state_db(KEY)
     /\ tx_status = Initial_tx_status(TX_ID,log.read_keys,log.write_keys)
     /\ partition_time = [p \in PART |-> 1]
@@ -127,18 +155,30 @@ Read_commit(rec) ==
         /\ db' = new_db @@ db
         /\ UNCHANGED <<ops,partition_time,read_keys,write_keys>>
 
-Read_next == LET
+Read_time(rec) == 
+    /\ rec.op = "time"
+    /\ partition_time' = [partition_time EXCEPT ![rec.tx] = @ + 1]
+    /\ UNCHANGED <<ops,tx_status,db,read_keys,write_keys>>
+
+Read_next(log) == LET
                 rec == log.trace[ind]
             IN
                 \/ Read_read(rec)
                 \/ Read_write(rec)
                 \/ Read_commit(rec)
+                \/ Read_time(rec)
 
-Terminating == ind >= Len(log.trace) /\ UNCHANGED vars
+Check_key_abort(start_timestamp,tx,key) ==
+    \E version \in (DOMAIN db[key]): 
+        /\ (db[key][version].state = "COMMITTED" /\ db[key][version].timestamp > start_timestamp)
 
-Init == ind = 1 /\ Read_init
+c_log == log_read_skew
 
-Next == (ind <= Len(log.trace) /\ ind' = ind + 1 /\ Read_next) \/ Terminating
+Terminating == ind >= Len(c_log.trace) /\ UNCHANGED vars
+
+Init == ind = 1 /\ Read_init(c_log)
+
+Next == (ind <= Len(c_log.trace) /\ ind' = ind + 1 /\ Read_next(c_log)) \/ Terminating
 
 Trace_behaviour == Init /\ [][Next]_vars /\ WF_vars(Next)
 
