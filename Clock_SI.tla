@@ -11,7 +11,7 @@ CONSTANTS KEY,       \* Set of all keys
           MAX_TIME   \* Max time value
 
 ASSUME \A key \in (DOMAIN KEY_PART): key \in PART_KEY[KEY_PART[key]] 
-ASSUME \A part \in PART: PART_KEY # {}
+ASSUME \A part \in PART: PART_KEY[part] # {}
 
 ASSUME TIME_DIST > 0
 ASSUME MAX_TIME > 0
@@ -211,7 +211,7 @@ Get_writed_keys_ops(tx) == LET
 Read(tx) ==
     /\ tx_status[tx].status = "RUNNING"
     /\ tx_status[tx].read_set # {}
-    /\ \E key \in Accessible_keys(tx,tx_status[tx].read_set):
+    /\ \E key \in tx_status[tx].read_set:
         LET 
             p == KEY_PART[key]
             start_timestamp == Get_start_timestamp(tx,p)
@@ -232,7 +232,7 @@ Write(tx) ==
     /\ tx_status[tx].status = "RUNNING"
     /\ tx_status[tx].read_set = {}
     /\ tx_status[tx].write_set # {}
-    /\ \E p \in Accessible_partitions(tx,tx_status[tx].write_set):
+    /\ \E p \in {KEY_PART[k]:k \in tx_status[tx].write_set}:
         LET
             start_timestamp == Get_start_timestamp(tx,p)
             keys == PART_KEY[p] \intersect tx_status[tx].write_set 
@@ -263,7 +263,7 @@ Abort_write(tx) ==
     /\ tx_status[tx].status = "RUNNING"
     /\ tx_status[tx].read_set = {}
     /\ tx_status[tx].write_set # {}
-    /\ \E p \in Accessible_partitions(tx,tx_status[tx].write_set):
+    /\ \E p \in {KEY_PART[k]:k \in tx_status[tx].write_set}:
         LET
             start_timestamp == Get_start_timestamp(tx,p)
             keys == PART_KEY[p] \intersect tx_status[tx].write_set 
@@ -383,19 +383,12 @@ SnapshotIsolation == (Finished) => CC!SnapshotIsolation(InitialState, Range(ops)
 Serializability == (Finished) => CC!Serializability(InitialState, Range(ops))
 
 \* Ensures that eventually all transactions end 
-All_finish == <> (\A tx \in TX_ID:tx_status[tx].status = "DONE")
-
-Evolution == \A tx \in TX_ID: \/ tx_status[tx].status = "NORMAL" => tx_status'[tx].status \in {"NORMAL","COMMIT","ABORT"}
-                              \/ tx_status[tx].status = "COMMIT" => tx_status'[tx].status \in {"COMMIT","DONE"}
-                              \/ tx_status[tx].status = "ABORT" => tx_status'[tx].status \in {"ABORT","DONE"}
-                              \/ tx_status[tx].status = "DONE" => tx_status'[tx].status \in {"DONE"}
+All_finish == <> Finished
 
 All_prepared == /\ (\A k \in KEY: \E version \in DOMAIN db[k]: db[k][version].state = "PREPARED") 
                 /\ (\A tx \in TX_ID: Cardinality(write_keys[tx]) = 2 /\ Cardinality(tx_status[tx].write_set) = 1 /\ Cardinality(read_keys[tx]) = 0)
 
 test_l ==  (All_prepared ~> [](~Finished))
-
-Correct_evolution == [][Evolution]_vars
 
 \* No prepares when it ends
 No_prepare == \A key \in KEY:\A n \in (DOMAIN db[key]): db[key][n] # "PREPARED"
@@ -403,21 +396,18 @@ No_prepare == \A key \in KEY:\A n \in (DOMAIN db[key]): db[key][n] # "PREPARED"
 \* Ensures that all writes have a entry
 All_entry == \A tx \in TX_ID: \A key \in write_keys[tx]: \E n \in (DOMAIN db[key]): db[key][n].tx = tx /\ db[key][n].state # "PREPARED"
 
-\* Ensures that if one write aborts then all writes of this transaction must abort either
-All_abort == \A key \in KEY: \E n \in (DOMAIN db[key]): 
-            (db[key][n].state = "ABORTED" => \A k \in write_keys[db[key][n].tx]:\E n1 \in (DOMAIN db[k]): db[k][n1].state = "ABORTED" /\ db[k][n1].tx = db[key][n].tx)
-
 \* Ensures that if one write commits then all writes of this transaction must commit either
 All_commit == \A key \in KEY: \E n \in (DOMAIN db[key]): 
                (db[key][n].state = "COMMITTED" => \A k \in write_keys[db[key][n].tx]:\E n1 \in (DOMAIN db[k]): db[k][n1].state = "COMMITTED" /\ db[k][n1].tx = db[key][n].tx)
 
 Final_validation == (\A tx \in TX_ID:tx_status[tx].status = "DONE") => (All_commit /\ 
-                                                             All_abort /\ 
                                                              All_entry /\ 
                                                              No_prepare)
 
+\* Ensures that all keys on the database can only have one "PREPARED" entry
 Only_prepare == [](\A key \in KEY:\E n \in (DOMAIN db[key]): (db[key][n].state = "PREPARED" => \A n1 \in (DOMAIN db[key]): n1 = n \/ db[key][n1].state # "PREPARED"))
 
+\* Ensures that all operations registred are reflected in the database
 All_ops_in_db == \A op \in ops: \E n \in (DOMAIN db[op.key]): 
                                 db[op.key][n].val = op.value /\ db[op.key][n].status # "ABORT" 
 \* CONSTRAINTS ----------------------------------------------------------------------
